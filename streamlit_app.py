@@ -21,13 +21,11 @@ st.header("1️⃣ Paramètres généraux")
 col1, col2 = st.columns(2)
 
 with col1:
-
-
-    remuneration_nette = st.number_input(
-        "Rémunération nette annuelle souhaitée (€)",
+    objectif_mensuel = st.number_input(
+        "Objectif de revenu net mensuel (€)",
         min_value=0,
-        value=18000,
-        step=500
+        value=2000,
+        step=100
     )
 
 with col2:
