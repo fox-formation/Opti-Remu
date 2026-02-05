@@ -361,6 +361,31 @@ with tab_gerants:
 
     st.divider()
 
+with tab_gerants:
+    c1, c2, c3 = st.columns([1, 1, 2])
+
+    with c1:
+        nb_gerants = st.number_input(
+            "Nb gérants",
+            min_value=1,
+            value=2,
+            step=1,
+            format="%d",
+            label_visibility="collapsed",
+        )
+        st.caption("Nombre de gérants")
+
+    with c2:
+        gerant_filtre = st.selectbox(
+            "Filtre",
+            options=["Tous"] + [f"Gérant {i}" for i in range(1, int(nb_gerants) + 1)],
+            label_visibility="collapsed",
+        )
+        st.caption("Filtre affichage")
+
+    st.divider()
+
+    # --- SAISIE DES OBJECTIFS ---
     for i in range(1, int(nb_gerants) + 1):
         st.number_input(
             f"G{i} – Net mensuel (€)",
@@ -370,6 +395,14 @@ with tab_gerants:
             format="%d",
             key=f"obj_mensuel_g{i}",
             label_visibility="collapsed",
+        )
+
+    # --- 🔑 RECONSTRUCTION DES OBJECTIFS (OBLIGATOIRE) ---
+    objectifs_annuels = []
+    for i in range(1, int(nb_gerants) + 1):
+        mensuel = st.session_state.get(f"obj_mensuel_g{i}", 0)
+        objectifs_annuels.append(float(mensuel) * 12.0)
+
         )
 with tab_societe:
     c1, c2, c3, c4 = st.columns(4)
