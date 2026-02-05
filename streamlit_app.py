@@ -12,6 +12,7 @@ st.subheader("Outil d’optimisation de la rémunération des dirigeants (SARL �
 
 st.divider()
 
+
 # =========================
 # SECTION 1 – Paramètres généraux
 # =========================
@@ -27,6 +28,13 @@ with col1:
         step=100
     )
 
+    remuneration_nette = st.number_input(
+        "Rémunération nette annuelle souhaitée (€)",
+        min_value=0,
+        value=18000,
+        step=500
+    )
+
 with col2:
     nombre_gerants = st.number_input(
         "Nombre de gérants",
@@ -36,6 +44,8 @@ with col2:
     )
 
 st.divider()
+
+
 
 # =========================
 # SECTION 2 – Informations société
