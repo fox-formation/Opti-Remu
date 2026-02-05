@@ -1,953 +1,842 @@
-# streamlit_app.py — Opti-Remu V2 (IS juridique vs IS économique + PFU vs IR + seuil 10% SSI)
+# app.py — Opti-Remu (Streamlit)
+# ============================================================
+# Architecture (OBLIGATOIRE)
+# 1) init_state() : toutes les variables "moteur" + UI ont des défauts ici
+# 2) UI (tabs) : écrit UNIQUEMENT dans st.session_state (aucun calcul métier)
+# 3) Variables dérivées : config dérivée calculée UNE SEULE FOIS
+# 4) Moteur pur : fonctions pures, paramètres explicites, zéro Streamlit
+# 5) Restitution : tableaux + expanders (audit-proof)
+#
+# ⚠️ Notes
+# - Modèle volontairement paramétrable (cabinet) : vous ajustez les taux/assiettes.
+# - IR ici = approximation par taux moyen (paramétrable) comme demandé.
+# - SSI : table éditable "tranches" (hors CSG/FP), + modules CSG/FP séparés.
+# - Dividendes : PFU par défaut ou IR barème (taux moyen) + abattement 40%.
+# - Dividendes > 10% (capital + primes + CCA) : intégration SSI activable.
+# - “IS juridique” ≠ “IS économique” : affichés séparément, jamais mélangés.
+# ============================================================
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Literal, Optional, Tuple
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ============================================================
-# Helpers
-# ============================================================
-def fmt_eur(x: float) -> str:
-    return f"{float(x):,.0f} €".replace(",", " ")
 
-def safe_div(a: float, b: float) -> float:
-    return 0.0 if b == 0 else a / b
-
-def piecewise_linear_rate(x: float, points):
-    """points: list of (x_ratio, rate) in increasing x_ratio"""
-    if not points:
-        return 0.0
-    if x <= points[0][0]:
-        return float(points[0][1])
-    for i in range(len(points) - 1):
-        x1, r1 = points[i]
-        x2, r2 = points[i + 1]
-        if x1 <= x <= x2:
-            if x2 == x1:
-                return float(r2)
-            t = (x - x1) / (x2 - x1)
-            return float(r1 + t * (r2 - r1))
-    return float(points[-1][1])
-
-# ============================================================
-# IS (France)
-# ============================================================
-def calcul_is(resultat_imposable: float, taux_reduit: bool) -> float:
-    """
-    - Si taux réduit : 15% jusqu'à 42 500 €, puis 25%
-    - Sinon : 25% sur la totalité
-    """
-    resultat = max(0.0, float(resultat_imposable))
-    if not taux_reduit:
-        return resultat * 0.25
-
-    plafond_reduit = 42500.0
-    is_reduit = min(resultat, plafond_reduit) * 0.15
-    is_normal = max(0.0, resultat - plafond_reduit) * 0.25
-    return is_reduit + is_normal
-
-# ============================================================
-# Seuil 10% dividendes SSI (par gérant)
-# ============================================================
-def seuil_dividendes_ssi(capital: float, primes: float, cca: float, nb_gerants: int) -> float:
-    base = max(0.0, float(capital)) + max(0.0, float(primes)) + max(0.0, float(cca))
-    nb = max(1, int(nb_gerants))
-    return 0.10 * base / nb
-
-# ============================================================
-# Dividendes — V2
-#  - Option PFU (12,8% + 17,2%)
-#  - Option IR barème (approché) + abattement 40% (donc base 60%)
-#  - Dividendes > seuil : SSI + (PS option prudente), IR > seuil optionnel
-# ============================================================
-def compute_dividendes_net_v2(
-    div_brut: float,
-    mode_div: str,                # "PFU" or "IR"
-    taux_ir_div: float,           # taux IR "approché" utilisé si mode_div="IR"
-    pfu_ir: float,                # 0.128 (utilisé si PFU)
-    pfu_ps: float,                # 0.172
-    seuil_ssi: float,
-    apply_ssi_on_above: bool,
-    ssi_on_above_rate: float,
-    ssi_add_to_ps: bool,
-    apply_ir_on_above: bool,      # IR sur part > seuil ? (option)
-):
-    """
-    Découpage :
-    - part <= seuil : pas SSI ; taxation selon mode (PFU OU IR abattement 40%) + PS 17,2%
-    - part > seuil : SSI si activé ; PS 17,2% option prudente ; IR optionnel (apply_ir_on_above)
-    """
-    div_brut = max(0.0, float(div_brut))
-    seuil = max(0.0, float(seuil_ssi))
-
-    leq = min(div_brut, seuil)
-    above = max(0.0, div_brut - seuil)
-
-    # === Impôt / PS sur <= seuil ===
-    if mode_div == "PFU":
-        ir_leq = leq * pfu_ir
-        ps_leq = leq * pfu_ps
-        base_ir_leq = leq
-        lib_ir = f"PFU IR {pfu_ir*100:.1f}%"
-    else:
-        # Barème : on approxime l'IR via un taux "approché" sur base 60% (abattement 40%)
-        base_ir_leq = leq * 0.60
-        ir_leq = base_ir_leq * taux_ir_div
-        ps_leq = leq * pfu_ps
-        lib_ir = f"IR (base 60%) @ {taux_ir_div*100:.1f}%"
-
-    # === Part > seuil ===
-    # SSI sur > seuil
-    ssi_above = above * (ssi_on_above_rate if apply_ssi_on_above else 0.0)
-
-    # PS sur > seuil (prudence)
-    ps_above = above * (pfu_ps if ssi_add_to_ps else 0.0)
-
-    # IR sur > seuil (optionnel)
-    if apply_ir_on_above:
-        if mode_div == "PFU":
-            ir_above = above * pfu_ir
-            base_ir_above = above
-        else:
-            base_ir_above = above * 0.60
-            ir_above = base_ir_above * taux_ir_div
-    else:
-        base_ir_above = 0.0
-        ir_above = 0.0
-
-    # Totaux
-    ir_total = ir_leq + ir_above
-    ps_total = ps_leq + ps_above
-    pfu_total = ir_total + ps_total
-
-    net = div_brut - pfu_total - ssi_above
-
-    detail = {
-        "Dividendes bruts": div_brut,
-        "Seuil 10% (par gérant)": seuil,
-        "Part <= seuil": leq,
-        "Part > seuil": above,
-
-        "Mode imposition": "PFU" if mode_div == "PFU" else "IR (abattement 40%)",
-        "IR sur <= seuil": ir_leq,
-        "PS sur <= seuil": ps_leq,
-        "Base IR <= seuil": base_ir_leq,
-        "Libellé IR": lib_ir,
-
-        "SSI sur > seuil": ssi_above,
-        "PS sur > seuil (prudence)": ps_above,
-        "IR sur > seuil (option)": ir_above,
-        "Base IR > seuil": base_ir_above,
-
-        "IR total": ir_total,
-        "PS total": ps_total,
-        "PFU/IR+PS total": pfu_total,
-        "Dividendes nets": max(0.0, net),
+# -------------------------------
+# PHASE 1 — INITIALISATION CENTRALE
+# -------------------------------
+def init_state() -> None:
+    defaults: Dict[str, object] = {
+        # --- Gérants
+        "nb_gerants": 1,
+        "selected_gerant": "Tous",
+        # objectifs nets mensuels (par gérant)
+        "obj_net_mensuels": [3500.0],
+        # --- Société
+        "resultat_avant_remu": 120000.0,  # résultat comptable/fiscal avant rémunérations
+        "capital_social": 10000.0,
+        "primes_emission": 0.0,
+        "cca": 0.0,
+        "option_is_reduit": True,
+        "seuil_is_reduit": 42500.0,
+        "taux_is_reduit": 0.15,
+        "taux_is_normal": 0.25,
+        # --- Dividendes
+        "mode_dividendes": "PFU",  # "PFU" ou "IR"
+        "taux_ir_remu": 0.20,  # taux moyen (approx) IR sur rémunération
+        "taux_ir_div": 0.20,  # taux moyen (approx) IR sur dividendes si option IR
+        "abattement_div_40": True,
+        "apply_ssi_on_div_above": True,  # SSI sur dividendes > seuil 10%
+        "apply_ps_on_div_above_prudent": True,  # PS sur > seuil, approche prudente
+        "apply_ir_on_div_above": False,  # option IR sur > seuil (si vous voulez scinder)
+        # --- Assiette SSI
+        "mode_assiette_ssi": "Remu seule",  # "Remu seule" / "Remu + Div > seuil"
+        # --- Cotisations SSI (hors CSG/FP) : table éditable
+        # Chaque ligne = tranche sur assiette annuelle (borne inf incluse, borne sup exclue)
+        "ssi_table": pd.DataFrame(
+            [
+                {"Libellé": "SSI - Tranche 1", "Borne_inf": 0.0, "Borne_sup": 45000.0, "Taux": 0.30},
+                {"Libellé": "SSI - Tranche 2", "Borne_inf": 45000.0, "Borne_sup": 1e12, "Taux": 0.15},
+            ]
+        ),
+        # --- CSG/CRDS (module séparé)
+        "use_csg": True,
+        "taux_csg_crds": 0.097,  # ordre de grandeur, ajustable
+        "abattement_csg": 0.0175,  # abattement d'assiette (approx), ajustable
+        # --- FP/CFP (module séparé)
+        "use_fp": True,
+        "pass_annuel": 46368.0,  # PASS annuel (modifiable)
+        "taux_fp": 0.0025,  # CFP/FP (approx), ajustable
+        # --- Hypothèses de charge sociale
+        "cotis_payees_par_societe": True,  # si True : cotisations déductibles IS
+        # --- Scénarios standard A→E (part "dividendes" dans le net cible)
+        "scenario_splits": {
+            "A - 100% rémunération": 0.00,
+            "B - 75% remu / 25% div": 0.25,
+            "C - 50% remu / 50% div": 0.50,
+            "D - 25% remu / 75% div": 0.75,
+            "E - 100% dividendes": 1.00,
+        },
+        # --- UI compact
+        "show_details": False,
+        "commentaires": {},  # commentaires libres par scénario et par gérant
     }
-    return max(0.0, net), detail
 
-def solve_dividendes_bruts_for_net_v2(target_net: float, **kwargs) -> float:
-    """
-    Trouve div_brut tel que dividendes_nets ~= target_net (dichotomie monotone).
-    """
-    target_net = max(0.0, float(target_net))
-    if target_net == 0:
-        return 0.0
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    lo, hi = 0.0, max(1.0, target_net / 0.3)
-    for _ in range(30):
-        net, _ = compute_dividendes_net_v2(hi, **kwargs)
-        if net >= target_net:
-            break
-        hi *= 2
+    # normalisation : obj_net_mensuels longueur = nb_gerants
+    nb = int(st.session_state["nb_gerants"])
+    obj = list(st.session_state["obj_net_mensuels"])
+    if len(obj) < nb:
+        obj = obj + [obj[-1] if obj else 0.0] * (nb - len(obj))
+    elif len(obj) > nb:
+        obj = obj[:nb]
+    st.session_state["obj_net_mensuels"] = obj
 
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        net, _ = compute_dividendes_net_v2(mid, **kwargs)
-        if net >= target_net:
-            hi = mid
-        else:
-            lo = mid
-    return hi
 
-# ============================================================
-# SSI (détail masqué + paramètres modifiables)
-# ============================================================
-def default_social_params() -> pd.DataFrame:
-    """
-    Cotisations hors CSG/CRDS & FP (détail modifiable).
-    Modèle transparent (approx) : permet d'ajuster sans "boîte noire".
-    """
-    return pd.DataFrame(
-        [
-            {
-                "Ligne": "Maladie - maternité (taux effectif progressif)",
-                "Type": "progressif_effectif",
-                "Actif": True,
-                "x1": 0.20, "r1": 0.00,
-                "x2": 0.40, "r2": 0.015,
-                "x3": 0.60, "r3": 0.040,
-                "x4": 1.10, "r4": 0.065,
-                "x5": 2.00, "r5": 0.077,
-                "x6": 3.00, "r6": 0.085,
-                "x7": 9.99, "r7": 0.065,
-                "plafond_mult": 999.0,
-            },
-            {
-                "Ligne": "Allocations familiales (progressif 0% -> 3,10%)",
-                "Type": "alloc_fam",
-                "Actif": True,
-                "seuil0_mult": 1.10,
-                "seuil1_mult": 1.40,
-                "taux_max": 0.031,
-                "plafond_mult": 999.0,
-            },
-            {
-                "Ligne": "Indemnités journalières (0,50% plafonné à 5 PASS)",
-                "Type": "plafonne",
-                "Actif": True,
-                "taux": 0.005,
-                "plafond_mult": 5.0,
-            },
-            {
-                "Ligne": "Contribution plafonnée (0,30% plafonné à 3 PASS)",
-                "Type": "plafonne",
-                "Actif": True,
-                "taux": 0.003,
-                "plafond_mult": 3.0,
-            },
-            {
-                "Ligne": "Retraite de base (17,15% <= 1 PASS ; 0,72% au-delà)",
-                "Type": "retraite_base",
-                "Actif": True,
-                "taux_plafond": 0.1715,
-                "taux_deplafond": 0.0072,
-                "plafond_mult": 1.0,
-            },
-            {
-                "Ligne": "Retraite complémentaire (8,10% <=1 PASS ; 9,10% de 1 à 4 PASS)",
-                "Type": "retraite_complementaire",
-                "Actif": True,
-                "taux_t1": 0.0810,
-                "taux_t2": 0.0910,
-                "t1_mult": 1.0,
-                "t2_mult": 4.0,
-            },
-            {
-                "Ligne": "Invalidité - décès (1,30% plafonné à 1 PASS)",
-                "Type": "plafonne",
-                "Actif": True,
-                "taux": 0.013,
-                "plafond_mult": 1.0,
-            },
-        ]
-    )
+# -------------------------------
+# PHASE 4 — MOTEUR PUR (zéro Streamlit)
+# -------------------------------
+ScenarioName = str
 
-def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: pd.DataFrame) -> pd.DataFrame:
-    """
-    Retourne un tableau détaillé (hors CSG/CRDS & FP).
-    """
-    rows = []
-    assiette = max(0.0, float(assiette))
-    pass_annuel = max(1.0, float(pass_annuel))
-    ratio = assiette / pass_annuel
 
-    for _, p in df_params.iterrows():
-        if not bool(p.get("Actif", True)):
+@dataclass(frozen=True)
+class CompanyParams:
+    resultat_avant_remu: float
+    option_is_reduit: bool
+    seuil_is_reduit: float
+    taux_is_reduit: float
+    taux_is_normal: float
+    cotis_payees_par_societe: bool
+    capital_social: float
+    primes_emission: float
+    cca: float
+
+
+@dataclass(frozen=True)
+class PersonalTaxParams:
+    mode_dividendes: Literal["PFU", "IR"]
+    taux_ir_remu: float
+    taux_ir_div: float
+    abattement_div_40: bool
+    apply_ps_on_div_above_prudent: bool
+    apply_ir_on_div_above: bool  # si vous voulez traiter différemment la part > seuil
+
+
+@dataclass(frozen=True)
+class SSIParams:
+    mode_assiette_ssi: Literal["Remu seule", "Remu + Div > seuil"]
+    apply_ssi_on_div_above: bool
+    seuil_div_10pct: float
+    ssi_table: pd.DataFrame  # colonnes: Libellé, Borne_inf, Borne_sup, Taux
+    use_csg: bool
+    taux_csg_crds: float
+    abattement_csg: float
+    use_fp: bool
+    pass_annuel: float
+    taux_fp: float
+
+
+@dataclass(frozen=True)
+class ManagerInput:
+    name: str
+    obj_net_annuel: float
+
+
+@dataclass(frozen=True)
+class ManagerScenarioResult:
+    # Cibles / flux
+    obj_net_annuel: float
+    net_via_remu: float
+    net_via_div: float
+    # Rémunération
+    remu_brute: float
+    remu_ir: float
+    # Dividendes
+    div_bruts: float
+    div_pfu_ir: float
+    div_ps: float
+    # SSI
+    assiette_ssi: float
+    cotis_ssi_hors_csg_fp: float
+    csg_crds: float
+    fp: float
+    # Totaux perso
+    impots_perso: float
+    prelevements_perso: float  # impôts + PS + SSI perso (éco)
+    # Allocation IS (ventilation “E1”)
+    is_juridique_alloc: float
+    is_economique_alloc: float
+
+
+@dataclass(frozen=True)
+class ScenarioTotals:
+    scenario: ScenarioName
+    # Agrégats société / groupe
+    remu_total: float
+    cotis_total_deductibles: float
+    is_juridique: float
+    is_economique: float
+    # Agrégats perso
+    cotisations_sociales_total: float
+    impots_perso_total: float
+    total_prelevements_juridique: float
+    total_prelevements_economique: float
+    # Détails par gérant
+    per_manager: Dict[str, ManagerScenarioResult]
+
+
+def _safe_float(x: object, default: float = 0.0) -> float:
+    try:
+        v = float(x)
+        if np.isfinite(v):
+            return v
+        return default
+    except Exception:
+        return default
+
+
+def compute_is_juridique(base_is: float, option_reduit: bool, seuil: float, t_reduit: float, t_normal: float) -> float:
+    base = max(0.0, base_is)
+    if not option_reduit:
+        return base * t_normal
+    seuil_eff = max(0.0, seuil)
+    part15 = min(base, seuil_eff)
+    part25 = max(0.0, base - seuil_eff)
+    return part15 * t_reduit + part25 * t_normal
+
+
+def compute_ssi_hors_csg_fp(assiette: float, ssi_table: pd.DataFrame) -> float:
+    """
+    Cotisations SSI hors CSG/FP, via un tableau de tranches éditable.
+    Colonnes attendues: Borne_inf, Borne_sup, Taux
+    """
+    a = max(0.0, assiette)
+    total = 0.0
+
+    # robustesse colonnes
+    for col in ["Borne_inf", "Borne_sup", "Taux"]:
+        if col not in ssi_table.columns:
+            return 0.0
+
+    df = ssi_table.copy()
+    df["Borne_inf"] = pd.to_numeric(df["Borne_inf"], errors="coerce").fillna(0.0)
+    df["Borne_sup"] = pd.to_numeric(df["Borne_sup"], errors="coerce").fillna(0.0)
+    df["Taux"] = pd.to_numeric(df["Taux"], errors="coerce").fillna(0.0)
+
+    df = df.sort_values(["Borne_inf", "Borne_sup"]).reset_index(drop=True)
+
+    for _, row in df.iterrows():
+        bi = max(0.0, float(row["Borne_inf"]))
+        bs = float(row["Borne_sup"])
+        taux = max(0.0, float(row["Taux"]))
+
+        if bs <= bi:
             continue
 
-        typ = p.get("Type", "")
-        lib = p.get("Ligne", "Cotisation")
+        tranche = max(0.0, min(a, bs) - bi)
+        total += tranche * taux
 
-        if typ == "progressif_effectif":
-            pts = [
-                (float(p["x1"]), float(p["r1"])),
-                (float(p["x2"]), float(p["r2"])),
-                (float(p["x3"]), float(p["r3"])),
-                (float(p["x4"]), float(p["r4"])),
-                (float(p["x5"]), float(p["r5"])),
-                (float(p["x6"]), float(p["r6"])),
-                (float(p["x7"]), float(p["r7"])),
-            ]
-            taux_eff = piecewise_linear_rate(ratio, pts)
-            montant = assiette * taux_eff
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"taux eff. ≈ {taux_eff*100:.2f}%", "Montant (€)": montant})
+    return total
 
-        elif typ == "alloc_fam":
-            s0 = float(p["seuil0_mult"])
-            s1 = float(p["seuil1_mult"])
-            tmax = float(p["taux_max"])
-            if ratio <= s0:
-                taux = 0.0
-            elif ratio >= s1:
-                taux = tmax
-            else:
-                taux = tmax * (ratio - s0) / (s1 - s0)
-            montant = assiette * taux
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"taux ≈ {taux*100:.2f}%", "Montant (€)": montant})
 
-        elif typ == "plafonne":
-            taux = float(p["taux"])
-            plaf_mult = float(p["plafond_mult"])
-            plafond = pass_annuel * plaf_mult
-            base_plaf = min(assiette, plafond)
-            montant = base_plaf * taux
-            rows.append({"Cotisation": lib, "Base (€)": base_plaf, "Règle / taux": f"{taux*100:.2f}% sur min(assiette ; {plaf_mult:.2f} PASS)", "Montant (€)": montant})
+def compute_csg_crds(assiette: float, taux: float, abattement: float) -> float:
+    """
+    Approximation: CSG/CRDS = assiette * (1 - abattement) * taux
+    """
+    a = max(0.0, assiette)
+    abat = min(max(0.0, abattement), 0.5)
+    t = max(0.0, taux)
+    return a * (1.0 - abat) * t
 
-        elif typ == "retraite_base":
-            taux_plaf = float(p["taux_plafond"])
-            taux_depl = float(p["taux_deplafond"])
-            plaf_mult = float(p["plafond_mult"])
-            plafond = pass_annuel * plaf_mult
-            base1 = min(assiette, plafond)
-            base2 = max(0.0, assiette - plafond)
-            montant = base1 * taux_plaf + base2 * taux_depl
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"{taux_plaf*100:.2f}% <= {plaf_mult:.2f} PASS + {taux_depl*100:.2f}% au-delà", "Montant (€)": montant})
 
-        elif typ == "retraite_complementaire":
-            t1 = float(p["taux_t1"])
-            t2 = float(p["taux_t2"])
-            t1_mult = float(p["t1_mult"])
-            t2_mult = float(p["t2_mult"])
-            lim1 = pass_annuel * t1_mult
-            lim2 = pass_annuel * t2_mult
-            base_t1 = min(assiette, lim1)
-            base_t2 = min(max(0.0, assiette - lim1), max(0.0, lim2 - lim1))
-            montant = base_t1 * t1 + base_t2 * t2
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"{t1*100:.2f}% <= {t1_mult:.2f} PASS ; {t2*100:.2f}% de {t1_mult:.2f} à {t2_mult:.2f} PASS", "Montant (€)": montant})
+def compute_fp(assiette: float, pass_annuel: float, taux_fp: float) -> float:
+    """
+    CFP/FP (approx) souvent plafonnée à 1 PASS.
+    """
+    a = max(0.0, assiette)
+    cap = max(0.0, pass_annuel)
+    base = min(a, cap) if cap > 0 else a
+    return base * max(0.0, taux_fp)
 
+
+def personal_tax_on_dividends(
+    div_bruts: float,
+    params: PersonalTaxParams,
+    apply_ps: bool,
+) -> Tuple[float, float]:
+    """
+    Retourne (IR/PFU sur dividendes, prélèvements sociaux).
+    - PFU : 12,8% (impôt) + PS 17,2% (si apply_ps True)
+    - IR : taux moyen * base après abattement 40% (si activé) ; PS idem si apply_ps True
+    """
+    d = max(0.0, div_bruts)
+    ps = 0.0
+    if apply_ps:
+        ps = d * 0.172  # PS "standard" sur dividendes
+
+    if params.mode_dividendes == "PFU":
+        imp = d * 0.128
+        return imp, ps
+
+    # IR barème approximé
+    base = d
+    if params.abattement_div_40:
+        base = d * 0.60
+    imp = base * max(0.0, params.taux_ir_div)
+    return imp, ps
+
+
+def personal_tax_on_remuneration(remu_brute: float, taux_ir_remu: float) -> float:
+    """
+    IR sur rémunération : approximation taux moyen.
+    """
+    r = max(0.0, remu_brute)
+    return r * max(0.0, taux_ir_remu)
+
+
+def solve_remu_brute_for_net_target(
+    net_target: float,
+    ssi_params: SSIParams,
+    tax_params: PersonalTaxParams,
+    max_iter: int = 60,
+) -> Tuple[float, float, float, float, float]:
+    """
+    Résout une rémunération brute annuelle (TNS) pour obtenir un net en poche annuel (approx)
+    net ≈ remu_brute - SSI_total - IR_remu
+    Où SSI_total = SSI_hors_csg_fp + CSG + FP (selon options)
+    Retourne: (remu_brute, ssi_hors, csg, fp, ir_remu)
+    """
+    target = max(0.0, net_target)
+
+    # méthode monotone par dichotomie
+    lo = 0.0
+    hi = max(1000.0, target * 3.0)  # borne haute initiale
+
+    def net_from_brut(brut: float) -> Tuple[float, float, float, float, float]:
+        assiette = brut
+        ssi_h = compute_ssi_hors_csg_fp(assiette, ssi_params.ssi_table)
+        csg = compute_csg_crds(assiette, ssi_params.taux_csg_crds, ssi_params.abattement_csg) if ssi_params.use_csg else 0.0
+        fp = compute_fp(assiette, ssi_params.pass_annuel, ssi_params.taux_fp) if ssi_params.use_fp else 0.0
+        ir = personal_tax_on_remuneration(brut, tax_params.taux_ir_remu)
+        net = brut - (ssi_h + csg + fp) - ir
+        return net, ssi_h, csg, fp, ir
+
+    # élargit hi si nécessaire
+    for _ in range(20):
+        net_hi, *_ = net_from_brut(hi)
+        if net_hi >= target:
+            break
+        hi *= 1.7
+
+    best = (0.0, 0.0, 0.0, 0.0, 0.0)
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2.0
+        net_mid, ssi_h, csg, fp, ir = net_from_brut(mid)
+        best = (mid, ssi_h, csg, fp, ir)
+        if abs(net_mid - target) <= 1e-2:
+            break
+        if net_mid < target:
+            lo = mid
         else:
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": "Type non géré", "Montant (€)": 0.0})
+            hi = mid
 
-    return pd.DataFrame(rows)
-
-# ============================================================
-# APP
-# ============================================================
-st.set_page_config(page_title="Opti-Remu V2", layout="wide")
-st.title("Opti-Remu — V2 (IS juridique vs IS économique + PFU/IR + seuil 10% SSI)")
-st.caption("Calculs par gérant + filtre. Table finale + fiches détaillées. Paramètres SSI modifiables.")
-
-st.divider()
+    return best
 
 
-# =========================
-# PARAMÉTRAGE – Onglets
-# =========================
-st.header("⚙️ Paramétrage")
+def compute_scenario(
+    managers: List[ManagerInput],
+    company: CompanyParams,
+    ssi: SSIParams,
+    tax: PersonalTaxParams,
+    scenario: ScenarioName,
+    div_share_of_net: float,
+) -> ScenarioTotals:
+    """
+    Scénario : chaque gérant vise son net annuel, réparti selon div_share_of_net (0..1)
+    - Part net via dividendes = obj_net_annuel * div_share
+    - Part net via rémunération = obj_net_annuel * (1 - div_share)
+    """
+    div_share = float(np.clip(div_share_of_net, 0.0, 1.0))
+    per_manager: Dict[str, ManagerScenarioResult] = {}
 
-tab_gerants, tab_societe, tab_dividendes, tab_ssi, tab_fp = st.tabs(
-    ["🧑 Gérants", "🏢 Société", "📊 Dividendes", "🧮 Cotisations SSI", "🎓 FP & CSG"]
-)
+    remu_total = 0.0
+    cotis_total = 0.0  # cotisations (SSI+CSG+FP) qui impactent la société si prises en charge
+    impots_perso_total = 0.0
+    cotisations_sociales_total = 0.0
 
-# =========================
-# ONGLET 🧑 GÉRANTS
-# =========================
-with tab_gerants:
-    c1, c2 = st.columns([1, 1])
+    # 1) Calcule d'abord les besoins "poche" par gérant (remu + div nets), puis remu brute et div bruts
+    for m in managers:
+        net_target = max(0.0, m.obj_net_annuel)
+        net_div = net_target * div_share
+        net_remu = net_target - net_div
 
-    with c1:
-        nb_gerants = st.number_input(
-            "Nb gérants",
-            min_value=1,
-            value=2,
-            step=1,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Nombre de gérants")
-
-    with c2:
-        gerant_filtre = st.selectbox(
-            "Filtre",
-            options=["Tous"] + [f"Gérant {i}" for i in range(1, int(nb_gerants) + 1)],
-            label_visibility="collapsed",
-        )
-        st.caption("Filtre affichage")
-
-    st.divider()
-
-    # Objectifs mensuels par gérant
-    for i in range(1, int(nb_gerants) + 1):
-        st.number_input(
-            f"G{i} – Net mensuel (€)",
-            min_value=0,
-            value=2000,
-            step=100,
-            format="%d",
-            key=f"obj_mensuel_g{i}",
-            label_visibility="collapsed",
+        # --- Rémunération : on solve le brut pour obtenir net_remu
+        remu_brute, ssi_h, csg, fp, ir_remu = solve_remu_brute_for_net_target(
+            net_remu, ssi, tax
         )
 
-    # 🔑 Reconstruction des objectifs annuels (utilisés par le moteur)
-    objectifs_annuels = []
-    for i in range(1, int(nb_gerants) + 1):
-        mensuel = st.session_state.get(f"obj_mensuel_g{i}", 0)
-        objectifs_annuels.append(float(mensuel) * 12.0)
+        # --- Dividendes : on remonte du net au brut selon PFU/IR + PS
+        # net_div = div_bruts - (PFU/IR) - PS - (SSI éventuelle sur > seuil si activée)
+        # Comme la SSI sur > seuil dépend du brut, on résout aussi par dichotomie.
 
-# =========================
-# ONGLET 🏢 SOCIÉTÉ
-# =========================
-# =========================
-# ONGLET 🏢 SOCIÉTÉ
-# =========================
-with tab_societe:
-    c1, c2, c3, c4 = st.columns(4)
+        seuil = max(0.0, ssi.seuil_div_10pct)
+        apply_ssi_on_above = bool(ssi.apply_ssi_on_div_above and ssi.mode_assiette_ssi == "Remu + Div > seuil")
+        apply_ps = bool(tax.apply_ps_on_div_above_prudent)
 
-    with c1:
-        resultat_avant_rem = st.number_input(
-            "Résultat",
-            value=100000,
-            step=1000,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Résultat avant rémunérations & IS")
+        def net_div_from_brut(div_brut: float) -> Tuple[float, float, float, float]:
+            d = max(0.0, div_brut)
+            imp_div, ps_div = personal_tax_on_dividends(d, tax, apply_ps=apply_ps)
 
-    with c2:
-        capital = st.number_input(
-            "Capital",
-            value=50000,
-            step=1000,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Capital social")
+            # SSI sur la part > seuil 10% (option)
+            above = max(0.0, d - seuil) if apply_ssi_on_above else 0.0
+            ssi_on_above_h = compute_ssi_hors_csg_fp(above, ssi.ssi_table) if apply_ssi_on_above else 0.0
+            csg_on_above = compute_csg_crds(above, ssi.taux_csg_crds, ssi.abattement_csg) if (apply_ssi_on_above and ssi.use_csg) else 0.0
+            fp_on_above = compute_fp(above, ssi.pass_annuel, ssi.taux_fp) if (apply_ssi_on_above and ssi.use_fp) else 0.0
 
-    with c3:
-        primes_emission = st.number_input(
-            "Primes",
-            value=0,
-            step=1000,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Primes d’émission")
+            net = d - imp_div - ps_div - (ssi_on_above_h + csg_on_above + fp_on_above)
+            return net, imp_div, ps_div, (ssi_on_above_h + csg_on_above + fp_on_above)
 
-    with c4:
-        cca_total = st.number_input(
-            "CCA",
-            value=0,
-            step=1000,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Comptes courants d’associés")
-
-    is_taux_reduit = st.checkbox(
-        "Soumis au taux réduit IS (15 % jusqu’à 42 500 €)",
-        value=True,
-    )
-
-    st.divider()
-
-    # 🔑 MODE D’ASSIETTE SSI (OBLIGATOIRE POUR LE MOTEUR)
-    mode_assiette = st.selectbox(
-        "Assiette SSI retenue (V2)",
-        options=[
-            "Assiette = rémunération + dividendes soumis SSI (part > seuil)",
-            "Assiette = rémunération uniquement (dividendes hors SSI)",
-        ],
-        index=0,
-    )
-
-
-# =========================
-# ONGLET 📊 DIVIDENDES
-# =========================
-with tab_dividendes:
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        mode_div = st.radio(
-            "Mode",
-            ["PFU", "IR"],
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        st.caption("Imposition dividendes")
-
-    # 🔑 INITIALISATIONS OBLIGATOIRES (TOUJOURS DÉFINIES)
-    taux_ir_div = 0.0
-    ssi_on_above_rate = 0.0
-    apply_ir_on_above = False
-
-    with c2:
-        pfu_ir = (
-            st.number_input(
-                "IR",
-                value=12.8,
-                step=0.1,
-                label_visibility="collapsed",
-            )
-            / 100
-        )
-        st.caption("IR (%)")
-
-    with c3:
-        pfu_ps = (
-            st.number_input(
-                "PS",
-                value=17.2,
-                step=0.1,
-                label_visibility="collapsed",
-            )
-            / 100
-        )
-        st.caption("Prélèvements sociaux (%)")
-
-    if mode_div == "IR":
-        taux_ir_div = (
-            st.number_input(
-                "Taux IR (après abattement 40 %)",
-                value=11.0,
-                step=1.0,
-                label_visibility="collapsed",
-            )
-            / 100
-        )
-
-    apply_ssi_on_above = st.checkbox(
-        "Soumettre aux cotisations SSI la part > 10 %",
-        value=True,
-    )
-
-    if apply_ssi_on_above:
-        ssi_on_above_rate = (
-            st.number_input(
-                "Taux SSI sur dividendes > 10 %",
-                value=45.0,
-                step=0.5,
-                label_visibility="collapsed",
-            )
-            / 100
-        )
-
-    apply_ir_on_above = st.checkbox(
-        "Appliquer aussi l’IR sur la part > 10 % (option)",
-        value=False,
-    )
-
-    ssi_add_to_ps = st.checkbox(
-        "Ajouter les PS sur la part > 10 % (prudence)",
-        value=True,
-    )
-
-
-
-# =========================
-# ONGLET 🧮 COTISATIONS SSI
-# =========================
-with tab_ssi:
-    st.caption("Les cotisations SSI sont modifiables ligne par ligne")
-
-    # 🔑 INITIALISATION OBLIGATOIRE
-    if "ssi_params" not in st.session_state:
-        st.session_state["ssi_params"] = default_social_params()
-
-    with st.expander("🔧 Tableau SSI (éditable)", expanded=False):
-        st.session_state["ssi_params"] = st.data_editor(
-            st.session_state["ssi_params"],
-            use_container_width=True,
-            num_rows="fixed",
-        )
-
-
-# =========================
-# ONGLET 🎓 FP & CSG
-# =========================
-with tab_fp:
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        pass_annuel = st.number_input(
-            "PASS",
-            value=48060,
-            step=100,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("PASS annuel")
-
-    with c2:
-        abattement_csg = st.number_input(
-            "Abattement CSG",
-            value=26.0,
-            step=0.1,
-            label_visibility="collapsed",
-        )
-        st.caption("Abattement (%)")
-
-    with c3:
-        taux_csg = st.number_input(
-            "CSG / CRDS",
-            value=9.7,
-            step=0.1,
-            label_visibility="collapsed",
-        )
-        st.caption("Taux (%)")
-
-# =========================
-# VARIABLES DÉRIVÉES (OBLIGATOIRES POUR LE MOTEUR)
-# =========================
-
-seuil_ssi_div = seuil_dividendes_ssi(
-    capital=capital,
-    primes=primes_emission,
-    cca=cca_total,
-    nb_gerants=int(nb_gerants),
-)
-
-# =========================
-# SECTION 6 – Moteur : scénarios + IS juridique vs économique + ventilation IS E1
-# =========================
-st.header("6️⃣ Tableau comparatif final (par gérant filtré) — V2")
-
-st.caption(
-    "V2 : IS calculé en 2 versions.\n"
-    "• IS juridique : base IS = Résultat – rémunérations – (cotisations si déductibles).\n"
-    "• IS économique : base = Résultat – rémunérations – cotisations – impôts perso (IR/PFU+PS) (pilotage cash).\n"
-    "IS ventilé (E1) au prorata du net cash perçu (rémunération nette + dividendes nets)."
-)
-
-scenarios = [
-    ("A", "100 % rémunération", 1.00),
-    ("B", "Rémunération majoritaire (75/25)", 0.75),
-    ("C", "Mix équilibré (50/50)", 0.50),
-    ("D", "Dividendes majoritaires (25/75)", 0.25),
-    ("E", "Dividendes maximisés (limite économique)", None),
-]
-
-details_by_scenario = {}
-table_final_rows = []
-
-# borne "prudente" pour le scénario E (approx) : résultat initial / gérant
-div_brut_max_societe_approx = max(0.0, float(resultat_avant_rem))
-div_brut_max_par_gerant_approx = div_brut_max_societe_approx / max(1, int(nb_gerants))
-
-for code, label, share_rem in scenarios:
-    gerants = []
-    total_rem = 0.0
-    total_cot = 0.0
-    total_impots_perso = 0.0  # IR/PFU+PS sur dividendes (incluant PS sur > seuil si prudence)
-    poids_eco = []
-
-    for i in range(int(nb_gerants)):
-        target_cash = objectifs_annuels[i]
-
-        # Répartition salaire net / dividendes nets
-        if share_rem is None:
-            div_net_max_guess, _ = compute_dividendes_net_v2(
-                div_brut_max_par_gerant_approx,
-                mode_div=mode_div,
-                taux_ir_div=taux_ir_div,
-                pfu_ir=pfu_ir,
-                pfu_ps=pfu_ps,
-                seuil_ssi=seuil_ssi_div,
-                apply_ssi_on_above=apply_ssi_on_above,
-                ssi_on_above_rate=ssi_on_above_rate,
-                ssi_add_to_ps=ssi_add_to_ps,
-                apply_ir_on_above=apply_ir_on_above,
-            )
-            div_net_target = min(target_cash, div_net_max_guess)
-            rem_net_target = max(0.0, target_cash - div_net_target)
+        if net_div <= 1e-9:
+            div_bruts = 0.0
+            imp_div = 0.0
+            ps_div = 0.0
+            ssi_div = 0.0
         else:
-            rem_net_target = target_cash * float(share_rem)
-            div_net_target = target_cash - rem_net_target
-
-        # Dividendes bruts nécessaires
-        div_brut_needed = solve_dividendes_bruts_for_net_v2(
-            div_net_target,
-            mode_div=mode_div,
-            taux_ir_div=taux_ir_div,
-            pfu_ir=pfu_ir,
-            pfu_ps=pfu_ps,
-            seuil_ssi=seuil_ssi_div,
-            apply_ssi_on_above=apply_ssi_on_above,
-            ssi_on_above_rate=ssi_on_above_rate,
-            ssi_add_to_ps=ssi_add_to_ps,
-            apply_ir_on_above=apply_ir_on_above,
-        )
-
-        div_net_calc, div_detail = compute_dividendes_net_v2(
-            div_brut_needed,
-            mode_div=mode_div,
-            taux_ir_div=taux_ir_div,
-            pfu_ir=pfu_ir,
-            pfu_ps=pfu_ps,
-            seuil_ssi=seuil_ssi_div,
-            apply_ssi_on_above=apply_ssi_on_above,
-            ssi_on_above_rate=ssi_on_above_rate,
-            ssi_add_to_ps=ssi_add_to_ps,
-            apply_ir_on_above=apply_ir_on_above,
-        )
-
-        # Impôts perso sur dividendes (IR + PS) = "PFU/IR+PS total"
-        impots_perso_i = float(div_detail["PFU/IR+PS total"])
-
-        # Dividendes > seuil (potentiellement SSI)
-        div_part_ssi = 0.0
-        if apply_ssi_on_above:
-            div_part_ssi = max(0.0, float(div_detail["Part > seuil"]))
-
-        # Assiette SSI proxy
-        if mode_assiette.startswith("Assiette = rémunération +"):
-            assiette_ssi = rem_net_target + div_part_ssi
-        else:
-            assiette_ssi = rem_net_target
-
-        # Cotisations hors CSG/FP
-        df_ssi_detail = compute_cotisations_detail(
-            assiette=assiette_ssi,
-            pass_annuel=float(pass_annuel),
-            df_params=st.session_state["ssi_params"],
-        )
-        cot_hors_csg_fp = float(df_ssi_detail["Montant (€)"].sum()) if not df_ssi_detail.empty else 0.0
-
-        # FP
-        fp = float(fp_montant)
-
-        # CSG/CRDS
-        base_csg = max(0.0, assiette_ssi) * (1.0 - float(abattement_csg) / 100.0)
-        csg_crds = base_csg * (float(taux_csg) / 100.0)
-
-        cotisations_total_i = cot_hors_csg_fp + fp + csg_crds
-
-        # Totaux agrégés
-        total_rem += rem_net_target
-        total_cot += cotisations_total_i
-        total_impots_perso += impots_perso_i
-
-        # Poids économique (E1)
-        poids_i = rem_net_target + div_net_calc
-        poids_eco.append(poids_i)
-
-        gerants.append(
-            {
-                "idx": i + 1,
-                "target_cash": target_cash,
-                "rem_net": rem_net_target,
-                "div_net": div_net_calc,
-                "div_brut": div_brut_needed,
-                "div_detail": div_detail,
-                "assiette_ssi": assiette_ssi,
-                "cot_hors_csg_fp": cot_hors_csg_fp,
-                "fp": fp,
-                "csg_crds": csg_crds,
-                "cotisations_total": cotisations_total_i,
-                "impots_perso_div": impots_perso_i,
-                "df_ssi_detail": df_ssi_detail,
-            }
-        )
-
-    # ---------------------------
-    # IS juridique vs IS économique
-    # ---------------------------
-    # Base IS juridique : Résultat - rémunérations - (cotisations si déductibles)
-    base_is_juridique = float(resultat_avant_rem) - total_rem - (total_cot if cotisations_deductibles_is else 0.0)
-    base_is_juridique = max(0.0, base_is_juridique)
-    is_juridique_societe = calcul_is(base_is_juridique, bool(is_taux_reduit))
-
-    # Base IS économique (pilotage cash) : Résultat - rémunérations - cotisations - impôts perso dividendes
-    base_is_economique = float(resultat_avant_rem) - total_rem - total_cot - total_impots_perso
-    base_is_economique = max(0.0, base_is_economique)
-    is_economique_societe = calcul_is(base_is_economique, bool(is_taux_reduit))
-
-    # Ventilation E1 (même clé de ventilation) sur les 2 IS
-    total_poids = sum(poids_eco)
-    is_juridique_par_gerant = []
-    is_economique_par_gerant = []
-    for i in range(int(nb_gerants)):
-        part = safe_div(poids_eco[i], total_poids)
-        is_juridique_par_gerant.append(is_juridique_societe * part)
-        is_economique_par_gerant.append(is_economique_societe * part)
-
-    details_by_scenario[code] = {
-        "label": label,
-        "gerants": gerants,
-        "total_rem": total_rem,
-        "total_cot": total_cot,
-        "total_impots_perso": total_impots_perso,
-        "base_is_juridique": base_is_juridique,
-        "is_juridique_societe": is_juridique_societe,
-        "is_juridique_par_gerant": is_juridique_par_gerant,
-        "base_is_economique": base_is_economique,
-        "is_economique_societe": is_economique_societe,
-        "is_economique_par_gerant": is_economique_par_gerant,
-    }
-
-    # ---------------------------
-    # Ligne tableau final (par gérant filtré)
-    # ---------------------------
-    if gerant_index is None:
-        # moyenne par gérant
-        cot_moy = total_cot / max(1, int(nb_gerants))
-        imp_perso_moy = total_impots_perso / max(1, int(nb_gerants))
-        is_j_moy = is_juridique_societe / max(1, int(nb_gerants))
-        is_e_moy = is_economique_societe / max(1, int(nb_gerants))
-
-        table_final_rows.append(
-            {
-                "Scénario": f"{code} – {label}",
-                "Cotisations sociales": cot_moy,
-                "Impôts perso (dividendes)": imp_perso_moy,
-                "IS juridique": is_j_moy,
-                "IS économique": is_e_moy,
-                "Total prélèvements (juridique)": cot_moy + imp_perso_moy + is_j_moy,
-                "Total prélèvements (éco)": cot_moy + imp_perso_moy + is_e_moy,
-            }
-        )
-    else:
-        g = details_by_scenario[code]["gerants"][gerant_index]
-        is_j_i = details_by_scenario[code]["is_juridique_par_gerant"][gerant_index]
-        is_e_i = details_by_scenario[code]["is_economique_par_gerant"][gerant_index]
-
-        table_final_rows.append(
-            {
-                "Scénario": f"{code} – {label}",
-                "Cotisations sociales": g["cotisations_total"],
-                "Impôts perso (dividendes)": g["impots_perso_div"],
-                "IS juridique": is_j_i,
-                "IS économique": is_e_i,
-                "Total prélèvements (juridique)": g["cotisations_total"] + g["impots_perso_div"] + is_j_i,
-                "Total prélèvements (éco)": g["cotisations_total"] + g["impots_perso_div"] + is_e_i,
-            }
-        )
-
-df_final = pd.DataFrame(table_final_rows)
-
-st.dataframe(
-    df_final.style.format(
-        {
-            "Cotisations sociales": lambda x: fmt_eur(x),
-            "Impôts perso (dividendes)": lambda x: fmt_eur(x),
-            "IS juridique": lambda x: fmt_eur(x),
-            "IS économique": lambda x: fmt_eur(x),
-            "Total prélèvements (juridique)": lambda x: fmt_eur(x),
-            "Total prélèvements (éco)": lambda x: fmt_eur(x),
-        }
-    ),
-    use_container_width=True,
-    hide_index=True,
-)
-
-st.divider()
-
-# =========================
-# SECTION 7 – Fiches détaillées (par scénario + filtre gérant)
-# =========================
-st.header("7️⃣ Fiches détaillées par scénario (filtrables) + commentaire")
-
-for code, label, _ in scenarios:
-    s = details_by_scenario[code]
-    with st.expander(f"📌 Scénario {code} – {label}", expanded=False):
-        st.write("Base IS juridique :", fmt_eur(s["base_is_juridique"]))
-        st.write("IS juridique (société) :", fmt_eur(s["is_juridique_societe"]))
-        st.write("Base IS économique :", fmt_eur(s["base_is_economique"]))
-        st.write("IS économique (société) :", fmt_eur(s["is_economique_societe"]))
-
-        st.divider()
-
-        if gerant_index is None:
-            st.info("Affichage : Tous les gérants (détails ci-dessous).")
-            for g in s["gerants"]:
-                idx0 = g["idx"] - 1
-                st.subheader(f"Gérant {g['idx']}")
-
-                st.write("Objectif net annuel :", fmt_eur(g["target_cash"]))
-                st.write("Rémunération nette :", fmt_eur(g["rem_net"]))
-                st.write("Dividendes nets :", fmt_eur(g["div_net"]))
-                st.write("Dividendes bruts :", fmt_eur(g["div_brut"]))
-
-                st.divider()
-
-                st.write("Assiette SSI (proxy) :", fmt_eur(g["assiette_ssi"]))
-                st.write("Cotisations sociales (total) :", fmt_eur(g["cotisations_total"]))
-                st.write("Impôts perso (dividendes) :", fmt_eur(g["impots_perso_div"]))
-
-                st.write("IS juridique ventilé (E1) :", fmt_eur(s["is_juridique_par_gerant"][idx0]))
-                st.write("IS économique ventilé (E1) :", fmt_eur(s["is_economique_par_gerant"][idx0]))
-
-                st.write(
-                    "✅ Total prélèvements (juridique) :",
-                    fmt_eur(g["cotisations_total"] + g["impots_perso_div"] + s["is_juridique_par_gerant"][idx0]),
-                )
-                st.write(
-                    "✅ Total prélèvements (éco) :",
-                    fmt_eur(g["cotisations_total"] + g["impots_perso_div"] + s["is_economique_par_gerant"][idx0]),
-                )
-
-                with st.expander("🔍 Détail dividendes (<=10% / >10%)", expanded=False):
-                    st.json(g["div_detail"])
-
-                with st.expander("🔍 Détail SSI (hors CSG/CRDS & FP) — lignes", expanded=False):
-                    df_det = g["df_ssi_detail"]
-                    if df_det is None or df_det.empty:
-                        st.write("Aucun détail disponible.")
-                    else:
-                        st.dataframe(
-                            df_det.style.format(
-                                {"Base (€)": lambda x: fmt_eur(x), "Montant (€)": lambda x: fmt_eur(x)}
-                            ),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                        st.write("Total hors CSG/CRDS & FP :", fmt_eur(float(df_det["Montant (€)"].sum())))
-
-                st.text_area(
-                    f"Commentaire – scénario {code} – gérant {g['idx']}",
-                    key=f"comment_{code}_g{g['idx']}",
-                    height=90,
-                )
-
-                st.divider()
-        else:
-            g = s["gerants"][gerant_index]
-            st.subheader(f"👤 {gerant_filtre}")
-
-            st.write("Objectif net annuel :", fmt_eur(g["target_cash"]))
-            st.write("Rémunération nette :", fmt_eur(g["rem_net"]))
-            st.write("Dividendes nets :", fmt_eur(g["div_net"]))
-            st.write("Dividendes bruts :", fmt_eur(g["div_brut"]))
-
-            st.divider()
-
-            st.write("Assiette SSI (proxy) :", fmt_eur(g["assiette_ssi"]))
-            st.write("Cotisations sociales (total) :", fmt_eur(g["cotisations_total"]))
-            st.write("Impôts perso (dividendes) :", fmt_eur(g["impots_perso_div"]))
-
-            st.write("IS juridique ventilé (E1) :", fmt_eur(s["is_juridique_par_gerant"][gerant_index]))
-            st.write("IS économique ventilé (E1) :", fmt_eur(s["is_economique_par_gerant"][gerant_index]))
-
-            st.write(
-                "✅ Total prélèvements (juridique) :",
-                fmt_eur(g["cotisations_total"] + g["impots_perso_div"] + s["is_juridique_par_gerant"][gerant_index]),
-            )
-            st.write(
-                "✅ Total prélèvements (éco) :",
-                fmt_eur(g["cotisations_total"] + g["impots_perso_div"] + s["is_economique_par_gerant"][gerant_index]),
-            )
-
-            with st.expander("🔍 Détail dividendes (<=10% / >10%)", expanded=False):
-                st.json(g["div_detail"])
-
-            with st.expander("🔍 Détail SSI (hors CSG/CRDS & FP) — lignes", expanded=False):
-                df_det = g["df_ssi_detail"]
-                if df_det is None or df_det.empty:
-                    st.write("Aucun détail disponible.")
+            lo = 0.0
+            hi = max(1000.0, net_div * 2.0)
+            for _ in range(25):
+                net_hi, *_ = net_div_from_brut(hi)
+                if net_hi >= net_div:
+                    break
+                hi *= 1.7
+            div_bruts = 0.0
+            imp_div = 0.0
+            ps_div = 0.0
+            ssi_div = 0.0
+            for _ in range(70):
+                mid = (lo + hi) / 2.0
+                net_mid, imp_mid, ps_mid, ssi_mid = net_div_from_brut(mid)
+                div_bruts, imp_div, ps_div, ssi_div = mid, imp_mid, ps_mid, ssi_mid
+                if abs(net_mid - net_div) <= 1e-2:
+                    break
+                if net_mid < net_div:
+                    lo = mid
                 else:
-                    st.dataframe(
-                        df_det.style.format(
-                            {"Base (€)": lambda x: fmt_eur(x), "Montant (€)": lambda x: fmt_eur(x)}
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                    st.write("Total hors CSG/CRDS & FP :", fmt_eur(float(df_det["Montant (€)"].sum())))
+                    hi = mid
 
-            st.text_area(
-                f"Commentaire – scénario {code} – {gerant_filtre}",
-                key=f"comment_{code}_{gerant_filtre}",
-                height=120,
+        # Assiette SSI (pour reporting)
+        assiette_ssi = remu_brute
+        if ssi.mode_assiette_ssi == "Remu + Div > seuil" and apply_ssi_on_above:
+            assiette_ssi += max(0.0, div_bruts - seuil)
+
+        # Totaux perso
+        impots_perso = ir_remu + imp_div
+        prelevements_sociaux = (ssi_h + csg + fp) + ps_div + ssi_div
+
+        per_manager[m.name] = ManagerScenarioResult(
+            obj_net_annuel=net_target,
+            net_via_remu=net_remu,
+            net_via_div=net_div,
+            remu_brute=remu_brute,
+            remu_ir=ir_remu,
+            div_bruts=div_bruts,
+            div_pfu_ir=imp_div,
+            div_ps=ps_div,
+            assiette_ssi=assiette_ssi,
+            cotis_ssi_hors_csg_fp=ssi_h + (ssi_div if apply_ssi_on_above else 0.0),  # reporting (mélange volontaire ici = cotis SSI)
+            csg_crds=csg,
+            fp=fp,
+            impots_perso=impots_perso,
+            prelevements_perso=impots_perso + prelevements_sociaux,
+            is_juridique_alloc=0.0,   # rempli plus bas
+            is_economique_alloc=0.0,  # rempli plus bas
+        )
+
+        remu_total += remu_brute
+        cotis_total += (ssi_h + csg + fp) if company.cotis_payees_par_societe else 0.0
+        impots_perso_total += impots_perso
+        cotisations_sociales_total += prelevements_sociaux
+
+    # 2) IS juridique (réel fiscal) : base = résultat - remu - cotis_deductibles
+    base_is_juridique = company.resultat_avant_remu - remu_total - (cotis_total if company.cotis_payees_par_societe else 0.0)
+    is_juridique = compute_is_juridique(
+        base_is_juridique, company.option_is_reduit, company.seuil_is_reduit, company.taux_is_reduit, company.taux_is_normal
+    )
+
+    # 3) IS économique (pilotage cash) : résultat - remu - cotis - impôts perso
+    # Ici on considère les impôts personnels comme une sortie économique "groupe"
+    base_is_economique = company.resultat_avant_remu - remu_total - (cotis_total if company.cotis_payees_par_societe else 0.0) - impots_perso_total
+    is_economique = compute_is_juridique(
+        base_is_economique, company.option_is_reduit, company.seuil_is_reduit, company.taux_is_reduit, company.taux_is_normal
+    )
+
+    # 4) Ventilation E1 par gérant (pro-rata du net cible, à défaut d’une autre clé)
+    total_obj = sum(max(0.0, m.obj_net_annuel) for m in managers) or 1.0
+    for m in managers:
+        w = max(0.0, m.obj_net_annuel) / total_obj
+        r = per_manager[m.name]
+        per_manager[m.name] = ManagerScenarioResult(
+            **{**r.__dict__},
+            is_juridique_alloc=is_juridique * w,
+            is_economique_alloc=is_economique * w,
+        )
+
+    # 5) Totaux prélèvements
+    # Juridique : IS juridique + impôts perso + cotisations sociales (SSI/CSG/FP + PS)
+    total_prelev_juridique = is_juridique + impots_perso_total + cotisations_sociales_total
+    # Economique : IS économique + impôts perso + cotisations sociales
+    total_prelev_economique = is_economique + impots_perso_total + cotisations_sociales_total
+
+    return ScenarioTotals(
+        scenario=scenario,
+        remu_total=remu_total,
+        cotis_total_deductibles=(cotis_total if company.cotis_payees_par_societe else 0.0),
+        is_juridique=is_juridique,
+        is_economique=is_economique,
+        cotisations_sociales_total=cotisations_sociales_total,
+        impots_perso_total=impots_perso_total,
+        total_prelevements_juridique=total_prelev_juridique,
+        total_prelevements_economique=total_prelev_economique,
+        per_manager=per_manager,
+    )
+
+
+# -------------------------------
+# PHASE 3 — VARIABLES DÉRIVÉES (UNE SEULE FOIS)
+# -------------------------------
+def build_config_from_state() -> Tuple[List[ManagerInput], CompanyParams, SSIParams, PersonalTaxParams, Dict[ScenarioName, float]]:
+    nb = int(st.session_state["nb_gerants"])
+    obj_m = list(st.session_state["obj_net_mensuels"])
+    managers = [
+        ManagerInput(name=f"Gérant {i+1}", obj_net_annuel=max(0.0, float(obj_m[i])) * 12.0)
+        for i in range(nb)
+    ]
+
+    capital = _safe_float(st.session_state["capital_social"])
+    primes = _safe_float(st.session_state["primes_emission"])
+    cca = _safe_float(st.session_state["cca"])
+    seuil_10 = 0.10 * max(0.0, (capital + primes + cca))
+
+    company = CompanyParams(
+        resultat_avant_remu=_safe_float(st.session_state["resultat_avant_remu"]),
+        option_is_reduit=bool(st.session_state["option_is_reduit"]),
+        seuil_is_reduit=_safe_float(st.session_state["seuil_is_reduit"]),
+        taux_is_reduit=_safe_float(st.session_state["taux_is_reduit"]),
+        taux_is_normal=_safe_float(st.session_state["taux_is_normal"]),
+        cotis_payees_par_societe=bool(st.session_state["cotis_payees_par_societe"]),
+        capital_social=capital,
+        primes_emission=primes,
+        cca=cca,
+    )
+
+    tax = PersonalTaxParams(
+        mode_dividendes=st.session_state["mode_dividendes"],
+        taux_ir_remu=_safe_float(st.session_state["taux_ir_remu"]),
+        taux_ir_div=_safe_float(st.session_state["taux_ir_div"]),
+        abattement_div_40=bool(st.session_state["abattement_div_40"]),
+        apply_ps_on_div_above_prudent=bool(st.session_state["apply_ps_on_div_above_prudent"]),
+        apply_ir_on_div_above=bool(st.session_state["apply_ir_on_div_above"]),
+    )
+
+    ssi = SSIParams(
+        mode_assiette_ssi=st.session_state["mode_assiette_ssi"],
+        apply_ssi_on_div_above=bool(st.session_state["apply_ssi_on_div_above"]),
+        seuil_div_10pct=seuil_10,
+        ssi_table=st.session_state["ssi_table"],
+        use_csg=bool(st.session_state["use_csg"]),
+        taux_csg_crds=_safe_float(st.session_state["taux_csg_crds"]),
+        abattement_csg=_safe_float(st.session_state["abattement_csg"]),
+        use_fp=bool(st.session_state["use_fp"]),
+        pass_annuel=_safe_float(st.session_state["pass_annuel"]),
+        taux_fp=_safe_float(st.session_state["taux_fp"]),
+    )
+
+    scenarios = dict(st.session_state["scenario_splits"])
+    return managers, company, ssi, tax, scenarios
+
+
+# -------------------------------
+# PHASE 2 — UI (tabs) : zéro calcul métier
+# -------------------------------
+def ui_tabs() -> None:
+    st.title("Opti-Remu — Optimisation rémunération / dividendes (SARL gérant majoritaire)")
+
+    tabs = st.tabs(["Gérants", "Société", "Dividendes & IR", "SSI (hors CSG/FP)", "CSG/FP", "Affichage"])
+
+    with tabs[0]:
+        st.subheader("Gérants")
+        nb = st.number_input("Nombre de gérants", min_value=1, max_value=10, value=int(st.session_state["nb_gerants"]), step=1)
+        st.session_state["nb_gerants"] = int(nb)
+        init_state()  # resynchronise les objectifs
+
+        cols = st.columns(2)
+        with cols[0]:
+            st.session_state["selected_gerant"] = st.selectbox(
+                "Filtre restitution",
+                options=["Tous"] + [f"Gérant {i+1}" for i in range(int(nb))],
+                index=0 if st.session_state["selected_gerant"] == "Tous" else ["Tous"] + [f"Gérant {i+1}" for i in range(int(nb))].index(st.session_state["selected_gerant"]),
+            )
+        with cols[1]:
+            st.session_state["cotis_payees_par_societe"] = st.toggle(
+                "Cotisations SSI payées par la société (déductibles IS)",
+                value=bool(st.session_state["cotis_payees_par_societe"]),
+                help="Si activé : cotisations (SSI/CSG/FP) sont déductibles en IS juridique.",
             )
 
-st.divider()
-st.caption("V2 : IS juridique vs économique + PFU/IR (approché) + SSI sur dividendes > 10% (option prudente).")
+        st.caption("Objectif : net **annuel** = 12 × net mensuel (net en poche après taxes & prélèvements selon vos paramètres).")
+        for i in range(int(nb)):
+            st.session_state["obj_net_mensuels"][i] = st.number_input(
+                f"Objectif net mensuel — Gérant {i+1} (€)",
+                min_value=0.0,
+                value=float(st.session_state["obj_net_mensuels"][i]),
+                step=100.0,
+            )
+
+    with tabs[1]:
+        st.subheader("Société")
+        st.session_state["resultat_avant_remu"] = st.number_input(
+            "Résultat avant rémunération (base de simulation) (€)",
+            value=float(st.session_state["resultat_avant_remu"]),
+            step=1000.0,
+        )
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.session_state["capital_social"] = st.number_input("Capital social (€)", value=float(st.session_state["capital_social"]), step=1000.0)
+        with c2:
+            st.session_state["primes_emission"] = st.number_input("Primes d'émission (€)", value=float(st.session_state["primes_emission"]), step=1000.0)
+        with c3:
+            st.session_state["cca"] = st.number_input("CCA (comptes courants) (€)", value=float(st.session_state["cca"]), step=1000.0)
+
+        st.session_state["option_is_reduit"] = st.toggle("Option taux réduit IS (15%)", value=bool(st.session_state["option_is_reduit"]))
+        cc = st.columns(3)
+        with cc[0]:
+            st.session_state["seuil_is_reduit"] = st.number_input("Seuil IS réduit (€)", value=float(st.session_state["seuil_is_reduit"]), step=500.0)
+        with cc[1]:
+            st.session_state["taux_is_reduit"] = st.number_input("Taux IS réduit", value=float(st.session_state["taux_is_reduit"]), step=0.01, format="%.4f")
+        with cc[2]:
+            st.session_state["taux_is_normal"] = st.number_input("Taux IS normal", value=float(st.session_state["taux_is_normal"]), step=0.01, format="%.4f")
+
+        st.session_state["mode_assiette_ssi"] = st.selectbox(
+            "Mode assiette SSI",
+            ["Remu seule", "Remu + Div > seuil"],
+            index=0 if st.session_state["mode_assiette_ssi"] == "Remu seule" else 1,
+            help="Active l'intégration des dividendes > 10% dans l'assiette SSI (si option correspondante).",
+        )
+
+    with tabs[2]:
+        st.subheader("Dividendes & IR")
+        st.session_state["mode_dividendes"] = st.radio(
+            "Fiscalité dividendes",
+            ["PFU", "IR"],
+            index=0 if st.session_state["mode_dividendes"] == "PFU" else 1,
+            horizontal=True,
+        )
+
+        c = st.columns(3)
+        with c[0]:
+            st.session_state["taux_ir_remu"] = st.number_input("Taux IR (approx) sur rémunération", value=float(st.session_state["taux_ir_remu"]), step=0.01, format="%.4f")
+        with c[1]:
+            st.session_state["taux_ir_div"] = st.number_input("Taux IR (approx) sur dividendes (si option IR)", value=float(st.session_state["taux_ir_div"]), step=0.01, format="%.4f")
+        with c[2]:
+            st.session_state["abattement_div_40"] = st.toggle("Abattement 40% (si option IR)", value=bool(st.session_state["abattement_div_40"]))
+
+        st.session_state["apply_ssi_on_div_above"] = st.toggle(
+            "Intégrer dividendes > 10% dans l'assiette SSI (activable)",
+            value=bool(st.session_state["apply_ssi_on_div_above"]),
+            help="Appliqué uniquement si le mode assiette SSI = 'Remu + Div > seuil'.",
+        )
+
+        st.session_state["apply_ps_on_div_above_prudent"] = st.toggle(
+            "Prélèvements sociaux sur dividendes (approche prudente)",
+            value=bool(st.session_state["apply_ps_on_div_above_prudent"]),
+        )
+
+        st.session_state["apply_ir_on_div_above"] = st.toggle(
+            "Option IR sur la part > seuil (option avancée)",
+            value=bool(st.session_state["apply_ir_on_div_above"]),
+            help="Ici conservée pour extension; le moteur applique actuellement un traitement homogène du dividende.",
+        )
+
+    with tabs[3]:
+        st.subheader("Cotisations SSI (hors CSG/FP)")
+        st.caption("Table éditable : tranches annuelles sur assiette. Ajustez selon votre référentiel cabinet.")
+        st.session_state["ssi_table"] = st.data_editor(
+            st.session_state["ssi_table"],
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Libellé": st.column_config.TextColumn(required=False),
+                "Borne_inf": st.column_config.NumberColumn(format="%.0f", required=True),
+                "Borne_sup": st.column_config.NumberColumn(format="%.0f", required=True),
+                "Taux": st.column_config.NumberColumn(format="%.4f", required=True),
+            },
+        )
+
+        with st.expander("Détails (rappel)"):
+            st.write(
+                "- Ce module couvre les cotisations SSI **hors** CSG/CRDS et FP/CFP (qui sont paramétrées séparément).\n"
+                "- La déductibilité IS dépend du paramètre “Cotisations payées par la société”.\n"
+                "- En pratique, l’assiette et les règles peuvent être plus fines (minima, plafonds, régularisations)."
+            )
+
+    with tabs[4]:
+        st.subheader("CSG/FP (modules séparés)")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.session_state["use_csg"] = st.toggle("Appliquer CSG/CRDS", value=bool(st.session_state["use_csg"]))
+            st.session_state["taux_csg_crds"] = st.number_input("Taux CSG/CRDS", value=float(st.session_state["taux_csg_crds"]), step=0.001, format="%.4f")
+            st.session_state["abattement_csg"] = st.number_input("Abattement CSG (assiette)", value=float(st.session_state["abattement_csg"]), step=0.001, format="%.4f")
+        with c2:
+            st.session_state["use_fp"] = st.toggle("Appliquer FP/CFP", value=bool(st.session_state["use_fp"]))
+            st.session_state["pass_annuel"] = st.number_input("PASS annuel (€)", value=float(st.session_state["pass_annuel"]), step=100.0)
+            st.session_state["taux_fp"] = st.number_input("Taux FP/CFP", value=float(st.session_state["taux_fp"]), step=0.0001, format="%.4f")
+
+    with tabs[5]:
+        st.subheader("Affichage")
+        st.session_state["show_details"] = st.toggle("Afficher les détails (expanders) par défaut", value=bool(st.session_state["show_details"]))
+
+
+# -------------------------------
+# PHASE 5 — RESTITUTION
+# -------------------------------
+def money(x: float) -> str:
+    return f"{x:,.0f} €".replace(",", " ")
+
+
+def render_results(totals: List[ScenarioTotals], managers: List[ManagerInput], ssi: SSIParams, company: CompanyParams) -> None:
+    # Synthèse seuil 10%
+    st.info(
+        f"Seuil 10% SSI dividendes (capital + primes + CCA) = {money(ssi.seuil_div_10pct)} "
+        f"(capital={money(company.capital_social)}, primes={money(company.primes_emission)}, CCA={money(company.cca)})"
+    )
+
+    # Tableau comparatif final (par scénario)
+    rows = []
+    for t in totals:
+        rows.append(
+            {
+                "Scénario": t.scenario,
+                "Rémunérations (total)": t.remu_total,
+                "Cotisations sociales (total)": t.cotisations_sociales_total,
+                "Impôts personnels (total)": t.impots_perso_total,
+                "IS juridique": t.is_juridique,
+                "IS économique": t.is_economique,
+                "Total prélèvements (juridique)": t.total_prelevements_juridique,
+                "Total prélèvements (économique)": t.total_prelevements_economique,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    df_show = df.copy()
+    for col in df_show.columns:
+        if col != "Scénario":
+            df_show[col] = df_show[col].apply(lambda v: money(float(v)))
+    st.subheader("Tableau comparatif final (A → E)")
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    # Filtres / détails
+    filt = st.session_state["selected_gerant"]
+    st.subheader("Fiches détaillées (audit-proof)")
+
+    for t in totals:
+        default_open = bool(st.session_state["show_details"])
+        with st.expander(f"{t.scenario}", expanded=default_open):
+            # bloc synthèse scénario
+            c = st.columns(4)
+            c[0].metric("IS juridique", money(t.is_juridique))
+            c[1].metric("IS économique", money(t.is_economique))
+            c[2].metric("Impôts personnels", money(t.impots_perso_total))
+            c[3].metric("Cotisations sociales", money(t.cotisations_sociales_total))
+
+            # par gérant
+            per = t.per_manager
+            names = list(per.keys()) if filt == "Tous" else [filt]
+            detail_rows = []
+            for name in names:
+                r = per[name]
+                detail_rows.append(
+                    {
+                        "Gérant": name,
+                        "Objectif net annuel": r.obj_net_annuel,
+                        "Net via rémunération": r.net_via_remu,
+                        "Net via dividendes": r.net_via_div,
+                        "Rémunération brute": r.remu_brute,
+                        "IR rémunération": r.remu_ir,
+                        "Dividendes bruts": r.div_bruts,
+                        "PFU/IR dividendes": r.div_pfu_ir,
+                        "PS dividendes": r.div_ps,
+                        "Assiette SSI (reporting)": r.assiette_ssi,
+                        "CSG/CRDS": r.csg_crds,
+                        "FP/CFP": r.fp,
+                        "IS juridique (alloc E1)": r.is_juridique_alloc,
+                        "IS économique (alloc E1)": r.is_economique_alloc,
+                    }
+                )
+            ddf = pd.DataFrame(detail_rows)
+            ddf_show = ddf.copy()
+            for col in ddf_show.columns:
+                if col not in ["Gérant"]:
+                    ddf_show[col] = ddf_show[col].apply(lambda v: money(float(v)))
+            st.dataframe(ddf_show, use_container_width=True, hide_index=True)
+
+            # commentaire libre
+            st.caption("Commentaire libre (par scénario, par gérant) — stocké en session")
+            for name in names:
+                key = f"{t.scenario}::{name}"
+                if key not in st.session_state["commentaires"]:
+                    st.session_state["commentaires"][key] = ""
+                st.session_state["commentaires"][key] = st.text_area(
+                    f"Commentaire — {name}",
+                    value=st.session_state["commentaires"][key],
+                    key=f"comment_{key}",
+                    height=80,
+                )
+
+
+# -------------------------------
+# MAIN
+# -------------------------------
+def main() -> None:
+    init_state()
+    ui_tabs()
+
+    managers, company, ssi, tax, scenarios = build_config_from_state()
+
+    # Calculs (moteur pur) — une fois
+    totals: List[ScenarioTotals] = []
+    for scen_name, div_share in scenarios.items():
+        totals.append(
+            compute_scenario(
+                managers=managers,
+                company=company,
+                ssi=ssi,
+                tax=tax,
+                scenario=scen_name,
+                div_share_of_net=float(div_share),
+            )
+        )
+
+    # Restitution
+    render_results(totals, managers, ssi, company)
+
+    with st.expander("Avertissements & périmètre (à conserver en production)"):
+        st.write(
+            "- Ce simulateur est un outil de **pilotage** : les paramètres SSI/CSG/FP et IR sont **approximatifs** et doivent être calibrés cabinet.\n"
+            "- La réalité SSI inclut des mécanismes (minima, plafonds, régularisations N/N+1, exonérations, etc.).\n"
+            "- La fiscalité des dividendes et leur assujettissement SSI dépendent de la situation exacte (statut, capital, CCA, règles applicables).\n"
+            "- “IS économique” inclut ici les impôts personnels dans une vision cash globale ; ce n’est pas l’IS fiscal."
+        )
+
+
+if __name__ == "__main__":
+    st.set_page_config(page_title="Opti-Remu", layout="wide")
+    main()
