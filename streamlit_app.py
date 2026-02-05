@@ -429,6 +429,9 @@ with cI:
 
 st.divider()
 
+
+
+
 # =========================
 # SECTION 3 – Dividendes (PFU + SSI au-dessus du seuil)
 # =========================
