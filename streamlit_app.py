@@ -550,6 +550,16 @@ with tab_fp:
         )
         st.caption("Taux (%)")
 
+# =========================
+# VARIABLES DÉRIVÉES (OBLIGATOIRES POUR LE MOTEUR)
+# =========================
+
+seuil_ssi_div = seuil_dividendes_ssi(
+    capital=capital,
+    primes=primes_emission,
+    cca=cca_total,
+    nb_gerants=int(nb_gerants),
+)
 
 # =========================
 # SECTION 6 – Moteur : scénarios + IS juridique vs économique + ventilation IS E1
