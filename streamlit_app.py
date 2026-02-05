@@ -447,7 +447,10 @@ with tab_dividendes:
             horizontal=True,
             label_visibility="collapsed",
         )
-        st.caption("Mode d’imposition")
+        st.caption("Imposition dividendes")
+
+    # 🔑 INITIALISATION OBLIGATOIRE
+    taux_ir_div = 0.0
 
     with c2:
         pfu_ir = (
@@ -473,14 +476,27 @@ with tab_dividendes:
         )
         st.caption("Prélèvements sociaux (%)")
 
+    if mode_div == "IR":
+        taux_ir_div = (
+            st.number_input(
+                "Taux IR appliqué (après abattement 40%)",
+                value=11.0,
+                step=1.0,
+                label_visibility="collapsed",
+            )
+            / 100
+        )
+
     apply_ssi_on_above = st.checkbox(
         "Soumettre aux cotisations SSI la part > 10 %",
         value=True,
     )
+
     ssi_add_to_ps = st.checkbox(
-        "Ajouter les PS sur la part > 10 % (approche prudente)",
+        "Ajouter les PS sur la part > 10 % (prudence)",
         value=True,
     )
+
 
 # =========================
 # ONGLET 🧮 COTISATIONS SSI
