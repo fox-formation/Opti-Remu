@@ -122,4 +122,30 @@ else:
     )
 
 
+st.divider()
+
+# =========================
+# SECTION 5 – Arbitrage dividendes / rémunération
+# =========================
+st.header("5️⃣ Arbitrage dividendes / rémunération")
+
+# Dividendes utilisables sans cotisations sociales
+dividendes_utilisables = min(objectif_annuel, seuil_dividendes)
+
+# Reste à couvrir via rémunération
+reste_a_couvrir = max(0, objectif_annuel - dividendes_utilisables)
+
+st.write("💰 Dividendes mobilisables (sans cotisations sociales) :", dividendes_utilisables, "€")
+st.write("📉 Reste à couvrir via rémunération :", reste_a_couvrir, "€")
+
+if reste_a_couvrir == 0:
+    st.success(
+        "L’objectif annuel peut être atteint uniquement par dividendes "
+        "sans cotisations sociales."
+    )
+else:
+    st.info(
+        "Les dividendes ne suffisent pas : "
+        "une rémunération est nécessaire pour atteindre l’objectif."
+    )
 
