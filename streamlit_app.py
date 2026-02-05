@@ -358,7 +358,7 @@ is_taux_reduit = st.checkbox(
     value=True
 )
 
-    )
+    
 with cC:
     capital = st.number_input(
         "Capital social (€)",
