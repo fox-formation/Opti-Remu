@@ -449,8 +449,9 @@ with tab_dividendes:
         )
         st.caption("Imposition dividendes")
 
-    # 🔑 INITIALISATION OBLIGATOIRE
+    # 🔑 INITIALISATIONS OBLIGATOIRES (TOUJOURS DÉFINIES)
     taux_ir_div = 0.0
+    ssi_on_above_rate = 0.0
 
     with c2:
         pfu_ir = (
@@ -479,7 +480,7 @@ with tab_dividendes:
     if mode_div == "IR":
         taux_ir_div = (
             st.number_input(
-                "Taux IR appliqué (après abattement 40%)",
+                "Taux IR (après abattement 40 %)",
                 value=11.0,
                 step=1.0,
                 label_visibility="collapsed",
@@ -491,6 +492,17 @@ with tab_dividendes:
         "Soumettre aux cotisations SSI la part > 10 %",
         value=True,
     )
+
+    if apply_ssi_on_above:
+        ssi_on_above_rate = (
+            st.number_input(
+                "Taux SSI sur dividendes > 10 %",
+                value=45.0,
+                step=0.5,
+                label_visibility="collapsed",
+            )
+            / 100
+        )
 
     ssi_add_to_ps = st.checkbox(
         "Ajouter les PS sur la part > 10 % (prudence)",
