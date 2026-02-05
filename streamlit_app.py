@@ -531,75 +531,85 @@ st.divider()
 st.header("6️⃣ Comparatif – 5 scénarios standards")
 
 st.caption(
-    "V1 : IR non intégré. Objectif = net de trésorerie (rémunération nette + dividendes nets). "
+    "V1 : IR non intégré. Objectif = net de trésorerie "
+    "(rémunération nette + dividendes nets). "
     "Les montants sont calculés par gérant."
 )
 
-# définition des scénarios (part du cash cible attribuée à la rémunération vs dividendes)
-# E = dividendes maximisés (jusqu'au net possible selon capacité)
+# -------------------------
+# Définition des scénarios
+# -------------------------
 scenarios = [
-    ("A", "100% rémunération", 1.00),
+    ("A", "100 % rémunération", 1.00),
     ("B", "Rémunération majoritaire (75/25)", 0.75),
     ("C", "Mix équilibré (50/50)", 0.50),
     ("D", "Dividendes majoritaires (25/75)", 0.25),
     ("E", "Dividendes maximisés (limite société)", None),
 ]
 
-# Capacité société (simplifiée V1)
-# On calcule un résultat après IS "théorique" sur la base du résultat fourni.
-# (Version plus exacte possible ensuite : IS après déduction rémunération)
+# -------------------------
+# Calcul IS (commun à tous)
+# -------------------------
 is_brut = calcul_is(resultat_avant_rem, is_taux_reduit)
 resultat_apres_is = resultat_avant_rem - is_brut
 
+st.subheader("🧾 Impôt sur les sociétés")
+
+st.write("Impôt sur les sociétés :", fmt_eur(is_brut))
+
+if is_taux_reduit:
+    st.write("Hypothèse IS : taux réduit appliqué (15 % jusqu’à 42 500 €)")
+else:
+    st.write("Hypothèse IS : taux normal 25 % sur la totalité")
+
 st.write(
-    "Impôt sur les sociétés :",
-    fmt_eur(is_brut),
-    "(taux réduit appliqué)" if is_taux_reduit else "(taux normal 25 %)"
-
-    
-st.write("IS (calcul simple) :", fmt_eur(is_brut))
-st.write("Résultat après IS (base distribuable V1) :", fmt_eur(resultat_apres_is))
-
-
+    "Résultat après IS (base distribuable V1) :",
+    fmt_eur(resultat_apres_is)
 )
 
+st.divider()
 
-# On suppose que le résultat après IS est entièrement distribuable (V1).
-# Dividendes bruts max par gérant = résultat après IS / nb
+# -------------------------
+# Capacité maximale dividendes
+# -------------------------
 div_brut_max_par_gerant = max(0.0, resultat_apres_is) / max(1, int(nb_gerants))
+
 div_net_max_par_gerant, _ = compute_dividendes_net(
     div_brut_max_par_gerant,
     pfu_ir=pfu_ir,
     pfu_ps=pfu_ps,
     seuil_ssi=seuil_ssi_div,
-    apply_ssi_on_above=apply_ssi_on_div_above,
-    ssi_on_above_rate=ssi_on_div_above_rate,
+    apply_ssi_on_above=apply_ssi_on_above,
+    ssi_on_above_rate=ssi_on_above_rate,
     ssi_on_above_add_to_ps=ssi_add_to_ps,
 )
 
-# Tableau de synthèse des scénarios
+# -------------------------
+# Boucle de calcul scénarios
+# -------------------------
 summary_rows = []
 details_by_scenario = {}
 
 for code, label, share_rem in scenarios:
-    target_cash = objectif_annuel  # net cash cible
 
+    target_cash = objectif_annuel  # objectif net annuel par gérant
+
+    # Répartition net rémunération / dividendes
     if share_rem is None:
-        # scénario E : on met autant que possible en dividendes nets
         div_net_target = min(target_cash, div_net_max_par_gerant)
         rem_net_target = max(0.0, target_cash - div_net_target)
     else:
-        rem_net_target = target_cash * float(share_rem)
+        rem_net_target = target_cash * share_rem
         div_net_target = target_cash - rem_net_target
 
-    # Trouver le dividende brut nécessaire pour obtenir div_net_target
+    # Dividendes bruts nécessaires
     div_brut_needed = solve_dividendes_bruts_for_net(
         div_net_target,
         pfu_ir=pfu_ir,
         pfu_ps=pfu_ps,
         seuil_ssi=seuil_ssi_div,
-        apply_ssi_on_above=apply_ssi_on_div_above,
-        ssi_on_above_rate=ssi_on_div_above_rate,
+        apply_ssi_on_above=apply_ssi_on_above,
+        ssi_on_above_rate=ssi_on_above_rate,
         ssi_on_above_add_to_ps=ssi_add_to_ps,
     )
 
@@ -608,109 +618,104 @@ for code, label, share_rem in scenarios:
         pfu_ir=pfu_ir,
         pfu_ps=pfu_ps,
         seuil_ssi=seuil_ssi_div,
-        apply_ssi_on_above=apply_ssi_on_div_above,
-        ssi_on_above_rate=ssi_on_div_above_rate,
+        apply_ssi_on_above=apply_ssi_on_above,
+        ssi_on_above_rate=ssi_on_above_rate,
         ssi_on_above_add_to_ps=ssi_add_to_ps,
     )
 
-    # Assiette SSI selon le mode
-    div_part_ssi = max(0.0, div_brut_needed - seuil_ssi_div) if apply_ssi_on_div_above else 0.0
-    assiette_ssi = rem_net_target + (div_part_ssi if mode_assiette.startswith("Assiette = rémunération +") else 0.0)
+    # Assiette SSI
+    div_part_ssi = 0.0
+    if apply_ssi_on_above:
+        div_part_ssi = max(0.0, div_brut_needed - seuil_ssi_div)
 
-    # Détail cotisations hors CSG/FP
+    if mode_assiette.startswith("Assiette = rémunération +"):
+        assiette_ssi = rem_net_target + div_part_ssi
+    else:
+        assiette_ssi = rem_net_target
+
+    # Cotisations hors CSG / FP
     df_detail = compute_cotisations_detail(
         assiette=assiette_ssi,
         pass_annuel=float(pass_annuel),
         df_params=st.session_state["ssi_params"],
     )
-    cot_hors_csg_fp = float(df_detail["Montant (€)"].sum()) if not df_detail.empty else 0.0
 
-    # FP (par gérant, simplifié à 1 PASS)
+    cot_hors_csg_fp = (
+        float(df_detail["Montant (€)"].sum())
+        if not df_detail.empty
+        else 0.0
+    )
+
+    # FP
     fp = float(fp_montant)
 
-    # CSG/CRDS : base = assiette_ssi * (1 - abattement)
-    base_csg = max(0.0, assiette_ssi) * (1.0 - float(abattement_csg) / 100.0)
-    csg_crds = base_csg * (float(taux_csg) / 100.0)
+    # CSG / CRDS
+    base_csg = assiette_ssi * (1 - abattement_csg / 100)
+    csg_crds = base_csg * (taux_csg / 100)
 
     total_cotisations = cot_hors_csg_fp + fp + csg_crds
 
-    # Coût société simplifié : rémunération nette + cotisations SSI liées à l'assiette (V1)
-    # (V2 pourra distinguer charge société / charge perso)
-    cout_societe_estime = rem_net_target + cot_hors_csg_fp + fp + csg_crds
+    cout_societe_estime = (
+        rem_net_target + total_cotisations
+    )
 
-    # Vérifier capacité dividendes
     capacity_ok = div_brut_needed <= div_brut_max_par_gerant + 1e-6
 
-    # Avantages / inconvénients (auto)
+    # Avantages / inconvénients
     avantages = []
     inconvenients = []
 
     if share_rem == 1.0:
-        avantages.append("Protection sociale maximisée (rémunération)")
-        inconvenients.append("Coût social potentiellement élevé")
+        avantages.append("Protection sociale maximale")
+        inconvenients.append("Coût social élevé")
     elif share_rem == 0.0:
-        avantages.append("Faible rémunération")
+        avantages.append("Charges sociales limitées")
         inconvenients.append("Protection sociale faible")
     else:
-        avantages.append("Mix : compromis social / fiscal")
-        inconvenients.append("Sensibilité au seuil 10% (SSI sur dividendes)")
+        avantages.append("Compromis rémunération / dividendes")
+        inconvenients.append("Sensibilité au seuil de 10 %")
 
     if not capacity_ok:
-        inconvenients.append("Objectif dividendes > capacité distribuable (résultat après IS)")
-
-    if apply_ssi_on_div_above and div_part_ssi > 0:
-        inconvenients.append("Part des dividendes > seuil soumise SSI (selon paramètres)")
+        inconvenients.append("Dépassement de la capacité distribuable")
 
     details_by_scenario[code] = {
         "label": label,
-        "rem_net_target": rem_net_target,
-        "div_net_target": div_net_target,
-        "div_brut_needed": div_brut_needed,
-        "div_detail": div_detail,
         "assiette_ssi": assiette_ssi,
-        "df_detail": df_detail,
         "cot_hors_csg_fp": cot_hors_csg_fp,
         "fp": fp,
-        "base_csg": base_csg,
         "csg_crds": csg_crds,
         "total_cotisations": total_cotisations,
-        "cout_societe_estime": cout_societe_estime,
-        "capacity_ok": capacity_ok,
-        "avantages": avantages,
-        "inconvenients": inconvenients,
     }
 
     summary_rows.append(
         {
             "Scénario": f"{code} – {label}",
-            "Rémunération nette (cible)": rem_net_target,
-            "Dividendes nets (cible)": div_net_target,
-            "Dividendes bruts (calculés)": div_brut_needed,
-            "Assiette SSI (V1)": assiette_ssi,
+            "Rémunération nette": rem_net_target,
+            "Dividendes nets": div_net_target,
             "Cotisations hors CSG/FP": cot_hors_csg_fp,
             "FP": fp,
             "CSG/CRDS": csg_crds,
             "Total cotisations": total_cotisations,
-            "Coût société estimé (V1)": cout_societe_estime,
-            "Capacité dividendes OK ?": "OUI" if capacity_ok else "NON",
+            "Coût société estimé": cout_societe_estime,
+            "Capacité dividendes OK": "OUI" if capacity_ok else "NON",
         }
     )
 
+# -------------------------
+# Tableau de synthèse
+# -------------------------
 df_summary = pd.DataFrame(summary_rows)
 
-# Affichage synthèse
 st.dataframe(
     df_summary.style.format(
         {
-            "Rémunération nette (cible)": lambda x: fmt_eur(x),
-            "Dividendes nets (cible)": lambda x: fmt_eur(x),
-            "Dividendes bruts (calculés)": lambda x: fmt_eur(x),
-            "Assiette SSI (V1)": lambda x: fmt_eur(x),
+            "Rémunération nette": lambda x: fmt_eur(x),
+            "Dividendes nets": lambda x: fmt_eur(x),
             "Cotisations hors CSG/FP": lambda x: fmt_eur(x),
             "FP": lambda x: fmt_eur(x),
             "CSG/CRDS": lambda x: fmt_eur(x),
             "Total cotisations": lambda x: fmt_eur(x),
-            "Coût société estimé (V1)": lambda x: fmt_eur(x),
+            "Coût société estimé": lambda x: fmt_eur(x),
         }
     ),
     use_container_width=True,
@@ -719,7 +724,6 @@ st.dataframe(
 
 st.divider()
 
-# =========================
 # SECTION 7 – Fiches scénarios (détails masqués + commentaire)
 # =========================
 st.header("7️⃣ Détails par scénario (dépliables) + commentaire")
