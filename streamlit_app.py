@@ -386,6 +386,9 @@ with tab_gerants:
 # =========================
 # ONGLET 🏢 SOCIÉTÉ
 # =========================
+# =========================
+# ONGLET 🏢 SOCIÉTÉ
+# =========================
 with tab_societe:
     c1, c2, c3, c4 = st.columns(4)
 
@@ -433,6 +436,19 @@ with tab_societe:
         "Soumis au taux réduit IS (15 % jusqu’à 42 500 €)",
         value=True,
     )
+
+    st.divider()
+
+    # 🔑 MODE D’ASSIETTE SSI (OBLIGATOIRE POUR LE MOTEUR)
+    mode_assiette = st.selectbox(
+        "Assiette SSI retenue (V2)",
+        options=[
+            "Assiette = rémunération + dividendes soumis SSI (part > seuil)",
+            "Assiette = rémunération uniquement (dividendes hors SSI)",
+        ],
+        index=0,
+    )
+
 
 # =========================
 # ONGLET 📊 DIVIDENDES
