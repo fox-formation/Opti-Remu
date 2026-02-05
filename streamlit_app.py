@@ -81,3 +81,35 @@ st.write("Capital social :", capital, "€")
 st.write("Taux IS :", taux_is, "%")
 
 
+
+st.divider()
+
+# =========================
+# SECTION 4 – Premiers calculs
+# =========================
+st.header("4️⃣ Premiers calculs")
+
+# Objectif annuel par gérant
+objectif_annuel = objectif_mensuel * 12
+
+# Seuil des dividendes non soumis aux cotisations sociales
+# Règle : 10 % du capital social / nombre de gérants
+seuil_dividendes = (capital * 0.10) / nombre_gerants
+
+st.write("🎯 Objectif annuel par gérant :", objectif_annuel, "€")
+st.write("📌 Seuil annuel de dividendes non soumis aux cotisations sociales :", seuil_dividendes, "€")
+
+# Lecture pédagogique
+if objectif_annuel <= seuil_dividendes:
+    st.success(
+        "L’objectif annuel est inférieur ou égal au seuil des 10 %. "
+        "➡️ Les dividendes peuvent suffire sans cotisations sociales."
+    )
+else:
+    st.warning(
+        "L’objectif annuel dépasse le seuil des 10 %. "
+        "➡️ Une rémunération sera nécessaire pour compléter."
+    )
+
+
+
