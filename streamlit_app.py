@@ -452,31 +452,92 @@ st.divider()
 
 
 # =========================
-# SECTION 3 – Dividendes (PFU + SSI au-dessus du seuil)
+# SECTION 3 – Dividendes (PFU + SSI au-delà du seuil)
 # =========================
-st.header("3️⃣ Paramètres dividendes (PFU + SSI au-delà du seuil 10%)")
+st.header("3️⃣ Paramètres dividendes")
 
-d1, d2, d3, d4 = st.columns(4)
-with d1:
-    pfu_ir = st.number_input("PFU - IR (%)", min_value=0.0, max_value=100.0, value=12.8, step=0.1) / 100
-with d2:
-    pfu_ps = st.number_input("PFU - prélèvements sociaux (%)", min_value=0.0, max_value=100.0, value=17.2, step=0.1) / 100
-with d3:
-    apply_ssi_on_div_above = st.checkbox("Appliquer SSI sur dividendes > seuil 10%", value=True)
-with d4:
-    ssi_on_div_above_rate = st.number_input("Taux SSI (dividendes > seuil) % (param)", min_value=0.0, max_value=100.0, value=45.0, step=0.5) / 100
+# ---------
+# Ligne 1 – PFU
+# ---------
+dA, dB = st.columns(2)
 
+with dA:
+    pfu_ir = (
+        st.number_input(
+            "PFU – Impôt sur le revenu (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=12.8,
+            step=0.1,
+        )
+        / 100
+    )
+
+with dB:
+    pfu_ps = (
+        st.number_input(
+            "PFU – Prélèvements sociaux (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=17.2,
+            step=0.1,
+        )
+        / 100
+    )
+
+# ---------
+# Ligne 2 – SSI sur dividendes > seuil
+# ---------
+dC, dD = st.columns(2)
+
+with dC:
+    apply_ssi_on_above = st.checkbox(
+        "Soumettre aux cotisations SSI la part des dividendes > seuil de 10 %",
+        value=True,
+    )
+
+with dD:
+    ssi_on_above_rate = (
+        st.number_input(
+            "Taux SSI sur dividendes > seuil (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=45.0,
+            step=0.5,
+        )
+        / 100
+    )
+
+# ---------
+# Ligne 3 – Interaction SSI / prélèvements sociaux
+# ---------
 ssi_add_to_ps = st.checkbox(
-    "Sur la part > seuil : SSI s’ajoute aux prélèvements sociaux (prudence)",
+    "Sur la part > seuil : les cotisations SSI s’ajoutent aux prélèvements sociaux (approche prudente)",
     value=True,
-    help="Selon interprétations, la part > seuil supporte des cotisations SSI et peut également supporter des PS. "
-         "Laisse coché si tu veux une approche prudente (sur-estimation possible).",
+    help=(
+        "Si coché : la part des dividendes > seuil supporte à la fois les cotisations SSI "
+        "ET les prélèvements sociaux.\n"
+        "Si décoché : les cotisations SSI remplacent les prélèvements sociaux sur cette part."
+    ),
 )
 
-seuil_ssi_div = seuil_dividendes_ssi(capital, primes_emission, cca_total, int(nb_gerants))
-st.write("📌 Seuil dividendes (10% / gérant) :", fmt_eur(seuil_ssi_div))
+# ---------
+# Calcul et affichage du seuil de 10 %
+# ---------
+seuil_ssi_div = seuil_dividendes_ssi(
+    capital=capital,
+    primes=primes_emission,
+    cca=cca_total,
+    nb_gerants=int(nb_gerants),
+)
+
+st.write(
+    "📌 Seuil des dividendes soumis aux cotisations SSI (10 % par gérant) :",
+    fmt_eur(seuil_ssi_div),
+)
 
 st.divider()
+
 
 # =========================
 # SECTION 4 – FP (formation professionnelle)
