@@ -343,6 +343,9 @@ st.divider()
 # =========================
 st.header("2️⃣ Données société + paramètres réglementaires")
 
+# ---------
+# Ligne 1
+# ---------
 cA, cB, cC, cD, cE = st.columns(5)
 
 with cA:
@@ -387,6 +390,9 @@ with cE:
         format="%d",
     )
 
+# ---------
+# Ligne 2
+# ---------
 cF, cG, cH, cI = st.columns(4)
 
 with cF:
@@ -400,7 +406,7 @@ with cF:
 
 with cG:
     abattement_csg = st.number_input(
-        "Abattement CSG/CRDS (%)",
+        "Abattement CSG / CRDS (%)",
         min_value=0.0,
         max_value=100.0,
         value=26.0,
@@ -409,7 +415,7 @@ with cG:
 
 with cH:
     taux_csg = st.number_input(
-        "Taux CSG/CRDS (%)",
+        "Taux CSG / CRDS (%)",
         min_value=0.0,
         max_value=100.0,
         value=9.70,
@@ -417,6 +423,14 @@ with cH:
     )
 
 with cI:
+    st.write("")  # colonne volontairement vide pour l'équilibre visuel
+
+# ---------
+# Ligne 3 – Assiette SSI (largeur étendue)
+# ---------
+cJ, cK = st.columns([3, 1])
+
+with cJ:
     mode_assiette = st.selectbox(
         "Assiette SSI retenue (V1)",
         options=[
@@ -424,11 +438,16 @@ with cI:
             "Assiette = rémunération uniquement (dividendes hors SSI)",
         ],
         index=0,
-        help="V1 : modèle transparent. Tu peux choisir si la part de dividendes > seuil alimente aussi l'assiette SSI.",
+        help=(
+            "V1 : ce paramètre permet de choisir si la part des dividendes "
+            "supérieure au seuil de 10 % est intégrée ou non à l’assiette SSI."
+        ),
     )
 
-st.divider()
+with cK:
+    st.write("")  # espace volontaire (respiration visuelle)
 
+st.divider()
 
 
 
