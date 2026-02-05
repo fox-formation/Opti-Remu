@@ -804,69 +804,65 @@ st.dataframe(
 
 st.divider()
 
-# SECTION 7 – Fiches scénarios (détails masqués + commentaire)
+# =========================
+# SECTION 7 – Détails par scénario (dépliables) + commentaire
 # =========================
 st.header("7️⃣ Détails par scénario (dépliables) + commentaire")
 
 for code, label, _ in scenarios:
+
     d = details_by_scenario[code]
 
     with st.expander(f"📌 Scénario {code} – {label}", expanded=False):
-        colx, coly, colz = st.columns(3)
-        with colx:
-            st.write("🎯 Objectif net annuel :", fmt_eur(objectif_annuel))
-            st.write("👤 Rémunération nette :", fmt_eur(d["rem_net_target"]))
-            st.write("💸 Dividendes nets :", fmt_eur(d["div_net_target"]))
-        with coly:
-            st.write("📌 Dividendes bruts calculés :", fmt_eur(d["div_brut_needed"]))
-            st.write("✅ Capacité dividendes :", "OK" if d["capacity_ok"] else "DÉPASSEMENT")
-            st.write("📎 Seuil 10% / gérant :", fmt_eur(seuil_ssi_div))
-        with colz:
-            st.write("🧾 Assiette SSI (V1) :", fmt_eur(d["assiette_ssi"]))
-            st.write("🔻 Cotisations hors CSG/FP :", fmt_eur(d["cot_hors_csg_fp"]))
-            st.write("🟣 FP :", fmt_eur(d["fp"]))
-            st.write("🟠 CSG/CRDS :", fmt_eur(d["csg_crds"]))
-            st.write("✅ Total cotisations :", fmt_eur(d["total_cotisations"]))
 
-        st.markdown("### ✅ Avantages")
-        for a in d["avantages"]:
-            st.write("•", a)
+        # ---------
+        # Synthèse chiffrée
+        # ---------
+        col1, col2 = st.columns(2)
 
-        st.markdown("### ⚠️ Inconvénients")
-        for inc in d["inconvenients"]:
-            st.write("•", inc)
+        with col1:
+            st.write("🧾 Assiette SSI retenue :", fmt_eur(d["assiette_ssi"]))
+            st.write(
+                "Cotisations hors CSG / FP :",
+                fmt_eur(d["cot_hors_csg_fp"])
+            )
 
-        # Détail dividendes
-        with st.expander("🔍 Détail dividendes (PFU + SSI au-delà du seuil)", expanded=False):
-            st.json({k: float(v) if isinstance(v, (int, float)) else v for k, v in d["div_detail"].items()})
+        with col2:
+            st.write("🟣 Formation professionnelle :", fmt_eur(d["fp"]))
+            st.write("🟠 CSG / CRDS :", fmt_eur(d["csg_crds"]))
+            st.write(
+                "✅ Total cotisations sociales :",
+                fmt_eur(d["total_cotisations"])
+            )
 
-        # Détail cotisations (masqué, dépliable) + possibilité de modifier les montants via paramètres globaux
-        with st.expander("🔍 Détail cotisations SSI (hors CSG/CRDS & FP) — lignes", expanded=False):
-            df_det = d["df_detail"].copy()
-            if df_det.empty:
-                st.info("Aucune ligne active (vérifie les paramètres SSI).")
-            else:
-                df_det["Base (€)"] = df_det["Base (€)"].astype(float)
-                df_det["Montant (€)"] = df_det["Montant (€)"].astype(float)
+        st.divider()
 
-                st.dataframe(
-                    df_det.style.format(
-                        {"Base (€)": lambda x: fmt_eur(x), "Montant (€)": lambda x: fmt_eur(x)}
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+        # ---------
+        # Lecture automatique
+        # ---------
+        st.markdown("### 🔍 Lecture du scénario")
 
-                st.write("Total hors CSG/FP :", fmt_eur(float(df_det["Montant (€)"].sum())))
+        if d["assiette_ssi"] == 0:
+            st.write("• Aucun revenu soumis aux cotisations SSI.")
+        else:
+            st.write("• Présence d’une assiette SSI significative.")
 
+        if d["total_cotisations"] > 0:
+            st.write("• Charges sociales non nulles à intégrer dans l’arbitrage.")
+
+        # ---------
         # Commentaire libre
-        st.markdown("### 📝 Commentaire (à compléter)")
+        # ---------
+        st.markdown("### 📝 Commentaire")
+
         st.text_area(
-            f"Commentaire pour le scénario {code}",
-            key=f"comment_{code}",
-            placeholder="Ex : scénario retenu car compromis coût/protection sociale ; attention au dépassement de capacité distribuable…",
+            f"Commentaire – scénario {code}",
+            key=f"comment_scenario_{code}",
+            placeholder=(
+                "Exemple : scénario écarté en raison d’un coût social trop élevé, "
+                "ou retenu pour assurer une meilleure protection sociale."
+            ),
             height=120,
         )
 
 st.divider()
-st.caption("V1 : modèle volontairement transparent et paramétrable. V2 possible : IS recalculé après rémunération, intégration IR, minima SSI, régularisations, ACRE…")
