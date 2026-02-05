@@ -328,210 +328,143 @@ st.caption("Calculs par gérant + filtre. Table finale + fiches détaillées. Pa
 
 st.divider()
 
-# =========================
-# SECTION 1 – Gérants (par gérant)
-# =========================
-st.header("1️⃣ Paramètres des gérants (par gérant)")
 
-colA, colB = st.columns(2)
-with colA:
-    nb_gerants = st.number_input("Nombre de gérants", min_value=1, value=2, step=1, format="%d")
-with colB:
-    gerant_filtre = st.selectbox(
-        "Filtrer l’affichage",
-        options=["Tous"] + [f"Gérant {i}" for i in range(1, int(nb_gerants) + 1)],
-        index=0,
-    )
+# =========================
+# PARAMÉTRAGE – Onglets
+# =========================
+st.header("⚙️ Paramétrage")
 
-st.subheader("🎯 Objectifs de rémunération nette (mensuelle) par gérant")
-objectifs_mensuels = []
-for i in range(1, int(nb_gerants) + 1):
-    objectifs_mensuels.append(
+tab_gerants, tab_societe, tab_dividendes, tab_ssi, tab_fp = st.tabs(
+    ["🧑 Gérants", "🏢 Société", "📊 Dividendes", "🧮 Cotisations SSI", "🎓 FP & CSG"]
+)
+with tab_gerants:
+    c1, c2, c3 = st.columns([1, 1, 2])
+
+    with c1:
+        nb_gerants = st.number_input(
+            "Nb gérants",
+            min_value=1,
+            value=2,
+            step=1,
+            format="%d",
+            label_visibility="collapsed",
+        )
+        st.caption("Nombre de gérants")
+
+    with c2:
+        gerant_filtre = st.selectbox(
+            "Filtre",
+            options=["Tous"] + [f"Gérant {i}" for i in range(1, int(nb_gerants) + 1)],
+            label_visibility="collapsed",
+        )
+        st.caption("Filtre affichage")
+
+    st.divider()
+
+    for i in range(1, int(nb_gerants) + 1):
         st.number_input(
-            f"Rémunération nette mensuelle souhaitée – Gérant {i} (€)",
+            f"G{i} – Net mensuel (€)",
             min_value=0,
             value=2000,
             step=100,
             format="%d",
+            key=f"obj_mensuel_g{i}",
+            label_visibility="collapsed",
         )
-    )
-objectifs_annuels = [float(x) * 12.0 for x in objectifs_mensuels]
+with tab_societe:
+    c1, c2, c3, c4 = st.columns(4)
 
-if gerant_filtre == "Tous":
-    gerant_index = None
-else:
-    gerant_index = int(gerant_filtre.split()[-1]) - 1
+    with c1:
+        resultat_avant_rem = st.number_input(
+            "Résultat",
+            value=100000,
+            step=1000,
+            format="%d",
+            label_visibility="collapsed",
+        )
+        st.caption("Résultat avant rem & IS")
 
-st.write("Objectifs annuels :", ", ".join(fmt_eur(x) for x in objectifs_annuels))
-st.divider()
+    with c2:
+        capital = st.number_input("Capital", value=50000, step=1000, format="%d", label_visibility="collapsed")
+        st.caption("Capital social")
 
-# =========================
-# SECTION 2 – Société & paramètres (3 lignes)
-# =========================
-st.header("2️⃣ Données société + paramètres réglementaires")
+    with c3:
+        primes_emission = st.number_input("Primes", value=0, step=1000, format="%d", label_visibility="collapsed")
+        st.caption("Primes d’émission")
 
-# Ligne 1
-cA, cB, cC, cD, cE = st.columns(5)
-with cA:
-    resultat_avant_rem = st.number_input(
-        "Résultat avant rémunération et avant IS (€)",
-        min_value=0,
-        value=100000,
-        step=1000,
-        format="%d",
-    )
-with cB:
-    is_taux_reduit = st.checkbox("Soumis au taux réduit d’IS (15 % jusqu’à 42 500 €)", value=True)
-with cC:
-    capital = st.number_input("Capital social (€)", min_value=0, value=50000, step=1000, format="%d")
-with cD:
-    primes_emission = st.number_input("Primes d'émission (€)", min_value=0, value=0, step=1000, format="%d")
-with cE:
-    cca_total = st.number_input("Comptes courants d'associés (total €)", min_value=0, value=0, step=1000, format="%d")
+    with c4:
+        cca_total = st.number_input("CCA", value=0, step=1000, format="%d", label_visibility="collapsed")
+        st.caption("CCA total")
 
-# Ligne 2
-cF, cG, cH, cI = st.columns(4)
-with cF:
-    pass_annuel = st.number_input("PASS (€) — modifiable (défaut 2026)", min_value=0, value=48060, step=100, format="%d")
-with cG:
-    abattement_csg = st.number_input("Abattement CSG / CRDS (%)", min_value=0.0, max_value=100.0, value=26.0, step=0.1)
-with cH:
-    taux_csg = st.number_input("Taux CSG / CRDS (%)", min_value=0.0, max_value=100.0, value=9.70, step=0.01)
-with cI:
-    cotisations_deductibles_is = st.checkbox(
-        "Cotisations SSI payées par la société (déductibles IS)",
+    st.checkbox(
+        "Taux réduit IS (15 % / 42 500 €)",
         value=True,
-        help="En pratique, les cotisations SSI sont personnelles, mais peuvent être prises en charge par la société (avantage) et alors déductibles. V2 te laisse choisir l'hypothèse.",
+        key="is_taux_reduit",
     )
+with tab_dividendes:
+    c1, c2, c3 = st.columns(3)
 
-# Ligne 3 (assiette SSI large)
-cJ, cK = st.columns([3, 1])
-with cJ:
-    mode_assiette = st.selectbox(
-        "Assiette SSI retenue (proxy V2)",
-        options=[
-            "Assiette = rémunération + dividendes soumis SSI (part > seuil)",
-            "Assiette = rémunération uniquement (dividendes hors SSI)",
-        ],
-        index=0,
-    )
-with cK:
-    st.write("")
+    with c1:
+        mode_div = st.radio(
+            "Mode",
+            ["PFU", "IR"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        st.caption("Imposition dividendes")
 
-st.divider()
+    with c2:
+        pfu_ir = st.number_input("IR", value=12.8, step=0.1, label_visibility="collapsed") / 100
+        st.caption("IR (%)")
 
-# =========================
-# SECTION 3 – Dividendes (PFU vs IR + SSI > seuil)
-# =========================
-st.header("3️⃣ Paramètres dividendes (PFU vs IR + seuil 10% SSI)")
+    with c3:
+        pfu_ps = st.number_input("PS", value=17.2, step=0.1, label_visibility="collapsed") / 100
+        st.caption("PS (%)")
 
-mA, mB, mC = st.columns([1, 1, 1])
-with mA:
-    mode_div = st.radio(
-        "Imposition dividendes",
-        options=["PFU", "IR"],
-        index=0,
-        horizontal=True,
-        help="PFU = 12,8% + 17,2%. IR = base 60% (abattement 40%) * taux IR approché + PS 17,2%.",
-    )
-with mB:
-    pfu_ir = st.number_input("PFU – IR (%)", min_value=0.0, max_value=100.0, value=12.8, step=0.1) / 100.0
-with mC:
-    pfu_ps = st.number_input("PFU – prélèvements sociaux (%)", min_value=0.0, max_value=100.0, value=17.2, step=0.1) / 100.0
+    st.checkbox("SSI sur dividendes > 10 %", value=True, key="apply_ssi_on_above")
+    st.checkbox("PS sur dividendes > 10 % (prudence)", value=True, key="ssi_add_to_ps")
 
-if mode_div == "IR":
-    taux_ir_div = st.number_input(
-        "Taux IR 'approché' appliqué à la base imposable (60%)",
-        min_value=0.0,
-        max_value=100.0,
-        value=11.0,
-        step=1.0,
-        help="Simplification V2 : on ne calcule pas le barème complet ; on applique un taux IR paramétrable à la base après abattement de 40%.",
-    ) / 100.0
-else:
-    taux_ir_div = 0.0
+with tab_ssi:
+    st.caption("Les cotisations SSI sont modifiables ligne par ligne")
 
-dC, dD, dE = st.columns([1, 1, 1])
-with dC:
-    apply_ssi_on_above = st.checkbox("Soumettre aux cotisations SSI la part des dividendes > seuil de 10 %", value=True)
-with dD:
-    ssi_on_above_rate = st.number_input("Taux SSI sur dividendes > seuil (%)", min_value=0.0, max_value=100.0, value=45.0, step=0.5) / 100.0
-with dE:
-    apply_ir_on_above = st.checkbox(
-        "Appliquer aussi l'IR sur la part > seuil (option)",
-        value=False,
-        help="Option prudente fiscale : appliquer l'IR (PFU IR ou IR barème) aussi au-delà du seuil. Laisse décoché si tu veux éviter une triple peine en V2.",
-    )
+    with st.expander("🔧 Tableau SSI (éditable)", expanded=False):
+        st.session_state["ssi_params"] = st.data_editor(
+            st.session_state["ssi_params"],
+            use_container_width=True,
+            num_rows="fixed",
+        )
+with tab_fp:
+    c1, c2, c3 = st.columns(3)
 
-ssi_add_to_ps = st.checkbox(
-    "Sur la part > seuil : les cotisations SSI s’ajoutent aux prélèvements sociaux (prudence)",
-    value=True,
-)
+    with c1:
+        pass_annuel = st.number_input(
+            "PASS",
+            value=48060,
+            step=100,
+            format="%d",
+            label_visibility="collapsed",
+        )
+        st.caption("PASS annuel")
 
-seuil_ssi_div = seuil_dividendes_ssi(capital=capital, primes=primes_emission, cca=cca_total, nb_gerants=int(nb_gerants))
-st.write("📌 Seuil dividendes (10 % par gérant) :", fmt_eur(seuil_ssi_div))
+    with c2:
+        abattement_csg = st.number_input(
+            "Abattement CSG",
+            value=26.0,
+            step=0.1,
+            label_visibility="collapsed",
+        )
+        st.caption("Abattement (%)")
 
-st.divider()
+    with c3:
+        taux_csg = st.number_input(
+            "CSG",
+            value=9.7,
+            step=0.1,
+            label_visibility="collapsed",
+        )
+        st.caption("CSG/CRDS (%)")
 
-# =========================
-# SECTION 4 – FP
-# =========================
-st.header("4️⃣ Contribution formation professionnelle (FP)")
 
-fp1, fp2 = st.columns(2)
-with fp1:
-    fp_statut = st.selectbox(
-        "Catégorie FP",
-        options=[
-            "Commerçant / libéral non réglementé (seul)",
-            "Commerçant / libéral non réglementé + conjoint collaborateur",
-            "Artisan",
-            "Autre (taux libre)",
-        ],
-        index=0,
-    )
-with fp2:
-    fp_taux_libre = st.number_input(
-        "Taux FP (%) si 'Autre (taux libre)'",
-        min_value=0.0, max_value=10.0, value=0.25, step=0.01
-    ) / 100.0
-
-if fp_statut == "Commerçant / libéral non réglementé (seul)":
-    fp_rate = 0.0025
-elif fp_statut == "Commerçant / libéral non réglementé + conjoint collaborateur":
-    fp_rate = 0.0034
-elif fp_statut == "Artisan":
-    fp_rate = 0.0029
-else:
-    fp_rate = fp_taux_libre
-
-fp_montant = float(pass_annuel) * fp_rate
-st.write("FP (par gérant, base 1 PASS) :", fmt_eur(fp_montant), f"— taux {fp_rate*100:.2f}%")
-st.divider()
-
-# =========================
-# SECTION 5 – Paramètres SSI (table modifiable)
-# =========================
-st.header("5️⃣ Paramètres SSI (hors CSG/CRDS & FP)")
-
-if "ssi_params" not in st.session_state:
-    st.session_state["ssi_params"] = default_social_params()
-
-r1, r2 = st.columns([1, 3])
-with r1:
-    if st.button("↩️ Réinitialiser les taux SSI (défaut)"):
-        st.session_state["ssi_params"] = default_social_params()
-with r2:
-    st.caption("Tableau technique modifiable. Le détail sera visible dans les fiches (dépliable).")
-
-with st.expander("🔧 Tableau SSI (modifiable)", expanded=False):
-    st.session_state["ssi_params"] = st.data_editor(
-        st.session_state["ssi_params"],
-        use_container_width=True,
-        num_rows="fixed",
-    )
-
-st.divider()
 
 # =========================
 # SECTION 6 – Moteur : scénarios + IS juridique vs économique + ventilation IS E1
