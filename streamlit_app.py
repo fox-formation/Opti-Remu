@@ -866,3 +866,62 @@ for code, label, _ in scenarios:
         )
 
 st.divider()
+
+
+
+# =========================
+# SECTION 8 – Comparatif simple par scénario
+# =========================
+st.header("8️⃣ Comparatif simple des scénarios")
+
+st.caption(
+    "Vue synthétique destinée à comparer rapidement les scénarios. "
+    "Les montants sont exprimés par gérant."
+)
+
+# Construction du tableau comparatif
+comparatif_rows = []
+
+for code, label, _ in scenarios:
+    d = details_by_scenario[code]
+
+    comparatif_rows.append(
+        {
+            "Scénario": f"{code} – {label}",
+            "Assiette SSI": d["assiette_ssi"],
+            "Cotisations hors CSG / FP": d["cot_hors_csg_fp"],
+            "FP": d["fp"],
+            "CSG / CRDS": d["csg_crds"],
+            "Total cotisations": d["total_cotisations"],
+        }
+    )
+
+df_comparatif = pd.DataFrame(comparatif_rows)
+
+# Affichage du tableau
+st.dataframe(
+    df_comparatif.style.format(
+        {
+            "Assiette SSI": lambda x: fmt_eur(x),
+            "Cotisations hors CSG / FP": lambda x: fmt_eur(x),
+            "FP": lambda x: fmt_eur(x),
+            "CSG / CRDS": lambda x: fmt_eur(x),
+            "Total cotisations": lambda x: fmt_eur(x),
+        }
+    ),
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.divider()
+
+st.markdown(
+    """
+**Lecture rapide :**
+- Ce tableau permet d’identifier rapidement les scénarios les plus coûteux socialement.
+- Aucun scénario n’est recommandé automatiquement.
+- La décision finale doit tenir compte du contexte du dirigeant
+  (protection sociale, trésorerie personnelle, stratégie long terme).
+"""
+)
+
