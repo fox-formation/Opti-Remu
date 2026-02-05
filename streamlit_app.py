@@ -344,6 +344,7 @@ st.divider()
 st.header("2️⃣ Données société + paramètres réglementaires")
 
 cA, cB, cC, cD, cE = st.columns(5)
+
 with cA:
     resultat_avant_rem = st.number_input(
         "Résultat avant rémunération et avant IS (€)",
@@ -352,13 +353,13 @@ with cA:
         step=1000,
         format="%d",
     )
-with cB:
-is_taux_reduit = st.checkbox(
-    "Soumis au taux réduit d’IS (15 % jusqu’à 42 500 €)",
-    value=True
-)
 
-    
+with cB:
+    is_taux_reduit = st.checkbox(
+        "Soumis au taux réduit d’IS (15 % jusqu’à 42 500 €)",
+        value=True
+    )
+
 with cC:
     capital = st.number_input(
         "Capital social (€)",
@@ -367,6 +368,7 @@ with cC:
         step=1000,
         format="%d",
     )
+
 with cD:
     primes_emission = st.number_input(
         "Primes d'émission (€)",
@@ -375,6 +377,7 @@ with cD:
         step=1000,
         format="%d",
     )
+
 with cE:
     cca_total = st.number_input(
         "Comptes courants d'associés (total €)",
@@ -385,6 +388,7 @@ with cE:
     )
 
 cF, cG, cH, cI = st.columns(4)
+
 with cF:
     pass_annuel = st.number_input(
         "PASS (€) — modifiable (défaut 2026)",
@@ -393,6 +397,7 @@ with cF:
         step=100,
         format="%d",
     )
+
 with cG:
     abattement_csg = st.number_input(
         "Abattement CSG/CRDS (%)",
@@ -401,6 +406,7 @@ with cG:
         value=26.0,
         step=0.1,
     )
+
 with cH:
     taux_csg = st.number_input(
         "Taux CSG/CRDS (%)",
@@ -409,6 +415,7 @@ with cH:
         value=9.70,
         step=0.01,
     )
+
 with cI:
     mode_assiette = st.selectbox(
         "Assiette SSI retenue (V1)",
