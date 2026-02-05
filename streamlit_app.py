@@ -488,12 +488,17 @@ with tab_dividendes:
 with tab_ssi:
     st.caption("Les cotisations SSI sont modifiables ligne par ligne")
 
+    # 🔑 INITIALISATION OBLIGATOIRE
+    if "ssi_params" not in st.session_state:
+        st.session_state["ssi_params"] = default_social_params()
+
     with st.expander("🔧 Tableau SSI (éditable)", expanded=False):
         st.session_state["ssi_params"] = st.data_editor(
             st.session_state["ssi_params"],
             use_container_width=True,
             num_rows="fixed",
         )
+
 
 # =========================
 # ONGLET 🎓 FP & CSG
