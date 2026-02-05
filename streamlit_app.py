@@ -452,6 +452,7 @@ with tab_dividendes:
     # 🔑 INITIALISATIONS OBLIGATOIRES (TOUJOURS DÉFINIES)
     taux_ir_div = 0.0
     ssi_on_above_rate = 0.0
+    apply_ir_on_above = False
 
     with c2:
         pfu_ir = (
@@ -504,10 +505,16 @@ with tab_dividendes:
             / 100
         )
 
+    apply_ir_on_above = st.checkbox(
+        "Appliquer aussi l’IR sur la part > 10 % (option)",
+        value=False,
+    )
+
     ssi_add_to_ps = st.checkbox(
         "Ajouter les PS sur la part > 10 % (prudence)",
         value=True,
     )
+
 
 
 # =========================
