@@ -25,7 +25,8 @@ with col1:
         "Objectif de revenu net mensuel (€)",
         min_value=0,
         value=2000,
-        step=100
+        step=100,
+        format="%d"
     )
 
 with col2:
@@ -33,12 +34,11 @@ with col2:
         "Nombre de gérants",
         min_value=1,
         value=2,
-        step=1
+        step=1,
+        format="%d"
     )
 
 st.divider()
-
-
 
 # =========================
 # SECTION 2 – Informations société
