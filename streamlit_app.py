@@ -120,6 +120,25 @@ def default_social_params(pass_annuel: float) -> pd.DataFrame:
         ]
     )
 
+
+def calcul_is(resultat_imposable: float, taux_reduit: bool) -> float:
+    """
+    Calcul de l'IS :
+    - 15 % jusqu'à 42 500 € si taux réduit
+    - 25 % au-delà
+    - sinon 25 % sur la totalité
+    """
+    resultat = max(0.0, float(resultat_imposable))
+
+    if not taux_reduit:
+        return resultat * 0.25
+
+    plafond_reduit = 42500
+    is_reduit = min(resultat, plafond_reduit) * 0.15
+    is_normal = max(0.0, resultat - plafond_reduit) * 0.25
+
+    return is_reduit + is_normal
+
 def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: pd.DataFrame) -> pd.DataFrame:
     """
     Retourne un df détail par ligne avec base, taux(s) et montant.
@@ -334,12 +353,11 @@ with cA:
         format="%d",
     )
 with cB:
-    taux_is = st.number_input(
-        "Taux IS (%)",
-        min_value=0.0,
-        max_value=100.0,
-        value=15.0,
-        step=0.1,
+is_taux_reduit = st.checkbox(
+    "Soumis au taux réduit d’IS (15 % jusqu’à 42 500 €)",
+    value=True
+)
+
     )
 with cC:
     capital = st.number_input(
@@ -520,11 +538,19 @@ scenarios = [
 # Capacité société (simplifiée V1)
 # On calcule un résultat après IS "théorique" sur la base du résultat fourni.
 # (Version plus exacte possible ensuite : IS après déduction rémunération)
-is_brut = float(resultat_avant_rem) * (float(taux_is) / 100.0)
-resultat_apres_is = float(resultat_avant_rem) - is_brut
+is_brut = calcul_is(resultat_avant_rem, is_taux_reduit)
+resultat_apres_is = resultat_avant_rem - is_brut
+
 
 st.write("IS (calcul simple) :", fmt_eur(is_brut))
 st.write("Résultat après IS (base distribuable V1) :", fmt_eur(resultat_apres_is))
+
+st.write(
+    "Impôt sur les sociétés :",
+    fmt_eur(is_brut),
+    "(taux réduit appliqué)" if is_taux_reduit else "(taux normal 25 %)"
+)
+
 
 # On suppose que le résultat après IS est entièrement distribuable (V1).
 # Dividendes bruts max par gérant = résultat après IS / nb
