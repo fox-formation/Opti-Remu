@@ -117,30 +117,32 @@ else:
     )
 
 
+
 st.divider()
 
 # =========================
-# SECTION 5 – Arbitrage dividendes / rémunération
+# SECTION 5 – Optimisation automatique
 # =========================
-st.header("5️⃣ Arbitrage dividendes / rémunération")
+st.header("5️⃣ Optimisation automatique de la rémunération")
 
-# Dividendes utilisables sans cotisations sociales
-dividendes_utilisables = min(objectif_annuel, seuil_dividendes)
+# Dividendes maximaux possibles sans cotisations sociales
+dividendes_optimises = min(objectif_annuel, seuil_dividendes)
 
-# Reste à couvrir via rémunération
-reste_a_couvrir = max(0, objectif_annuel - dividendes_utilisables)
+# Rémunération nécessaire pour atteindre l’objectif
+remuneration_calculee = max(0, objectif_annuel - dividendes_optimises)
 
-st.write("💰 Dividendes mobilisables (sans cotisations sociales) :", dividendes_utilisables, "€")
-st.write("📉 Reste à couvrir via rémunération :", reste_a_couvrir, "€")
+st.write("💰 Dividendes retenus (sans cotisations sociales) :", dividendes_optimises, "€")
+st.write("👤 Rémunération nette à verser :", remuneration_calculee, "€")
 
-if reste_a_couvrir == 0:
+if remuneration_calculee == 0:
     st.success(
-        "L’objectif annuel peut être atteint uniquement par dividendes "
+        "L’objectif est atteint uniquement par dividendes "
         "sans cotisations sociales."
     )
 else:
     st.info(
-        "Les dividendes ne suffisent pas : "
-        "une rémunération est nécessaire pour atteindre l’objectif."
+        "L’outil optimise automatiquement : "
+        "les dividendes sont utilisés au maximum, "
+        "le solde est versé en rémunération."
     )
 
