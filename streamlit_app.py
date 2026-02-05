@@ -541,14 +541,16 @@ scenarios = [
 is_brut = calcul_is(resultat_avant_rem, is_taux_reduit)
 resultat_apres_is = resultat_avant_rem - is_brut
 
-
-st.write("IS (calcul simple) :", fmt_eur(is_brut))
-st.write("Résultat après IS (base distribuable V1) :", fmt_eur(resultat_apres_is))
-
 st.write(
     "Impôt sur les sociétés :",
     fmt_eur(is_brut),
     "(taux réduit appliqué)" if is_taux_reduit else "(taux normal 25 %)"
+
+    
+st.write("IS (calcul simple) :", fmt_eur(is_brut))
+st.write("Résultat après IS (base distribuable V1) :", fmt_eur(resultat_apres_is))
+
+
 )
 
 
