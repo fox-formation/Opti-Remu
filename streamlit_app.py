@@ -337,8 +337,12 @@ st.header("⚙️ Paramétrage")
 tab_gerants, tab_societe, tab_dividendes, tab_ssi, tab_fp = st.tabs(
     ["🧑 Gérants", "🏢 Société", "📊 Dividendes", "🧮 Cotisations SSI", "🎓 FP & CSG"]
 )
+
+# =========================
+# ONGLET 🧑 GÉRANTS
+# =========================
 with tab_gerants:
-    c1, c2, c3 = st.columns([1, 1, 2])
+    c1, c2 = st.columns([1, 1])
 
     with c1:
         nb_gerants = st.number_input(
@@ -361,31 +365,7 @@ with tab_gerants:
 
     st.divider()
 
-with tab_gerants:
-    c1, c2, c3 = st.columns([1, 1, 2])
-
-    with c1:
-        nb_gerants = st.number_input(
-            "Nb gérants",
-            min_value=1,
-            value=2,
-            step=1,
-            format="%d",
-            label_visibility="collapsed",
-        )
-        st.caption("Nombre de gérants")
-
-    with c2:
-        gerant_filtre = st.selectbox(
-            "Filtre",
-            options=["Tous"] + [f"Gérant {i}" for i in range(1, int(nb_gerants) + 1)],
-            label_visibility="collapsed",
-        )
-        st.caption("Filtre affichage")
-
-    st.divider()
-
-    # --- SAISIE DES OBJECTIFS ---
+    # Objectifs mensuels par gérant
     for i in range(1, int(nb_gerants) + 1):
         st.number_input(
             f"G{i} – Net mensuel (€)",
@@ -397,13 +377,15 @@ with tab_gerants:
             label_visibility="collapsed",
         )
 
-    # --- 🔑 RECONSTRUCTION DES OBJECTIFS (OBLIGATOIRE) ---
+    # 🔑 Reconstruction des objectifs annuels (utilisés par le moteur)
     objectifs_annuels = []
     for i in range(1, int(nb_gerants) + 1):
         mensuel = st.session_state.get(f"obj_mensuel_g{i}", 0)
         objectifs_annuels.append(float(mensuel) * 12.0)
 
-        )
+# =========================
+# ONGLET 🏢 SOCIÉTÉ
+# =========================
 with tab_societe:
     c1, c2, c3, c4 = st.columns(4)
 
@@ -415,25 +397,46 @@ with tab_societe:
             format="%d",
             label_visibility="collapsed",
         )
-        st.caption("Résultat avant rem & IS")
+        st.caption("Résultat avant rémunérations & IS")
 
     with c2:
-        capital = st.number_input("Capital", value=50000, step=1000, format="%d", label_visibility="collapsed")
+        capital = st.number_input(
+            "Capital",
+            value=50000,
+            step=1000,
+            format="%d",
+            label_visibility="collapsed",
+        )
         st.caption("Capital social")
 
     with c3:
-        primes_emission = st.number_input("Primes", value=0, step=1000, format="%d", label_visibility="collapsed")
+        primes_emission = st.number_input(
+            "Primes",
+            value=0,
+            step=1000,
+            format="%d",
+            label_visibility="collapsed",
+        )
         st.caption("Primes d’émission")
 
     with c4:
-        cca_total = st.number_input("CCA", value=0, step=1000, format="%d", label_visibility="collapsed")
-        st.caption("CCA total")
+        cca_total = st.number_input(
+            "CCA",
+            value=0,
+            step=1000,
+            format="%d",
+            label_visibility="collapsed",
+        )
+        st.caption("Comptes courants d’associés")
 
-    st.checkbox(
-        "Taux réduit IS (15 % / 42 500 €)",
+    is_taux_reduit = st.checkbox(
+        "Soumis au taux réduit IS (15 % jusqu’à 42 500 €)",
         value=True,
-        key="is_taux_reduit",
     )
+
+# =========================
+# ONGLET 📊 DIVIDENDES
+# =========================
 with tab_dividendes:
     c1, c2, c3 = st.columns(3)
 
@@ -444,19 +447,44 @@ with tab_dividendes:
             horizontal=True,
             label_visibility="collapsed",
         )
-        st.caption("Imposition dividendes")
+        st.caption("Mode d’imposition")
 
     with c2:
-        pfu_ir = st.number_input("IR", value=12.8, step=0.1, label_visibility="collapsed") / 100
+        pfu_ir = (
+            st.number_input(
+                "IR",
+                value=12.8,
+                step=0.1,
+                label_visibility="collapsed",
+            )
+            / 100
+        )
         st.caption("IR (%)")
 
     with c3:
-        pfu_ps = st.number_input("PS", value=17.2, step=0.1, label_visibility="collapsed") / 100
-        st.caption("PS (%)")
+        pfu_ps = (
+            st.number_input(
+                "PS",
+                value=17.2,
+                step=0.1,
+                label_visibility="collapsed",
+            )
+            / 100
+        )
+        st.caption("Prélèvements sociaux (%)")
 
-    st.checkbox("SSI sur dividendes > 10 %", value=True, key="apply_ssi_on_above")
-    st.checkbox("PS sur dividendes > 10 % (prudence)", value=True, key="ssi_add_to_ps")
+    apply_ssi_on_above = st.checkbox(
+        "Soumettre aux cotisations SSI la part > 10 %",
+        value=True,
+    )
+    ssi_add_to_ps = st.checkbox(
+        "Ajouter les PS sur la part > 10 % (approche prudente)",
+        value=True,
+    )
 
+# =========================
+# ONGLET 🧮 COTISATIONS SSI
+# =========================
 with tab_ssi:
     st.caption("Les cotisations SSI sont modifiables ligne par ligne")
 
@@ -466,6 +494,10 @@ with tab_ssi:
             use_container_width=True,
             num_rows="fixed",
         )
+
+# =========================
+# ONGLET 🎓 FP & CSG
+# =========================
 with tab_fp:
     c1, c2, c3 = st.columns(3)
 
@@ -490,13 +522,12 @@ with tab_fp:
 
     with c3:
         taux_csg = st.number_input(
-            "CSG",
+            "CSG / CRDS",
             value=9.7,
             step=0.1,
             label_visibility="collapsed",
         )
-        st.caption("CSG/CRDS (%)")
-
+        st.caption("Taux (%)")
 
 
 # =========================
