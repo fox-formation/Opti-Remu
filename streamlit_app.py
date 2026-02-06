@@ -1,13 +1,14 @@
-# streamlit_app.py — Opti-Remu V2 (REFactor complet)
+# streamlit_app.py — Opti-Remu V2 (REFactor complet + IR abattement 10% + conseil auto)
 # ============================================================
 # OBJECTIFS (cabinet / audit-proof)
 # - Architecture stable : init_state -> UI -> config dérivée -> moteur pur -> restitution
 # - Valeurs par défaut visibles et modifiables (PASS, CSG, SSI, PFU, barème IR, scénarios)
-# - IS fiscal = colonne "IS" (ex-IS juridique). IS économique retiré (sur demande).
+# - IS fiscal = colonne "IS" (ex-IS juridique). IS économique non affiché.
 # - Tableau synthétique multi-scénarios (approche fiscalité & gestion de patrimoine)
 # - Colonne "TOTAL" grisée
 # - Ajout "Dividendes bruts"
-# - IR sur rémunération nette = barème progressif (tranches paramétrables + option revalo tranche 1)
+# - IR sur rémunération = barème progressif + abattement 10% (CGI art. 83)
+# - Commentaire de conseil : pré-rempli automatiquement mais modifiable (table + fiches)
 # ============================================================
 
 from __future__ import annotations
@@ -23,8 +24,10 @@ from typing import Dict, Any, Tuple, List
 def fmt_eur(x: float) -> str:
     return f"{float(x):,.0f} €".replace(",", " ")
 
+
 def safe_div(a: float, b: float) -> float:
     return 0.0 if b == 0 else a / b
+
 
 def piecewise_linear_rate(x: float, points: List[Tuple[float, float]]) -> float:
     """points: list of (x_ratio, rate) in increasing x_ratio"""
@@ -55,6 +58,7 @@ def calcul_is(resultat_imposable: float, taux_reduit: bool) -> float:
     resultat = max(0.0, float(resultat_imposable))
     if not taux_reduit:
         return resultat * 0.25
+
     plafond_reduit = 42500.0
     is_reduit = min(resultat, plafond_reduit) * 0.15
     is_normal = max(0.0, resultat - plafond_reduit) * 0.25
@@ -71,18 +75,27 @@ def seuil_dividendes_ssi(capital: float, primes: float, cca: float, nb_gerants: 
 
 
 # ============================================================
-# IR sur rémunération (barème progressif — 1 part, sans quotient)
+# IR sur rémunération — barème progressif + abattement 10% (CGI art. 83)
 # ============================================================
-def calcul_ir_progressif(revenu_net: float, tranche1_revalo: bool) -> float:
+def calcul_ir_remuneration_detail(remuneration_nette_annuelle: float, tranche1_revalo: bool) -> Dict[str, Any]:
     """
-    Calcul IR selon tranches fournies par l'utilisateur.
-    Hypothèses :
-    - revenu_net = rémunération nette imposable annuelle (approx)
-    - 1 part
-    - pas de quotient familial, pas de décotes/réductions/crédits
+    IR (traitements et salaires) — version cabinet / explicable.
+
+    Règles appliquées :
+    - Abattement forfaitaire 10% (CGI art. 83) : on applique 10% sans plafond (hypothèse simplificatrice)
+    - Barème progressif (CGI art. 197) sur revenu net imposable
+    - Hypothèses : 1 part, pas de quotient familial, pas de décote, pas de réductions/crédits.
+
+    Retour :
+    - dict avec IR total + détail par tranches (audit-proof).
     """
-    revenu = max(0.0, float(revenu_net))
-    # Tranche 1 : 11 497 ou 11 612 si revalo +1%
+    rem = max(0.0, float(remuneration_nette_annuelle))
+
+    # Abattement 10% (CGI art. 83)
+    abattement_10 = rem * 0.10
+    revenu_imposable = max(0.0, rem - abattement_10)
+
+    # Tranche 1 (revalo optionnelle)
     t1_max = 11612.0 if tranche1_revalo else 11497.0
 
     tranches = [
@@ -93,12 +106,61 @@ def calcul_ir_progressif(revenu_net: float, tranche1_revalo: bool) -> float:
         (180294.0, float("inf"), 0.45),
     ]
 
-    ir = 0.0
+    ir_total = 0.0
+    detail_tranches: List[Dict[str, Any]] = []
+
     for bas, haut, taux in tranches:
-        if revenu > bas:
-            base_tr = min(revenu, haut) - bas
-            ir += base_tr * taux
-    return ir
+        if revenu_imposable > bas:
+            base = min(revenu_imposable, haut) - bas
+            impot = base * taux
+            ir_total += impot
+            detail_tranches.append(
+                {
+                    "Tranche": f"{int(taux*100)} %",
+                    "Base taxable": float(base),
+                    "Taux": float(taux),
+                    "Impôt tranche": float(impot),
+                    "Règle": "Barème progressif IR (CGI art. 197)",
+                }
+            )
+
+    return {
+        "Rémunération nette annuelle": float(rem),
+        "Abattement 10% (CGI art. 83)": float(abattement_10),
+        "Revenu net imposable IR": float(revenu_imposable),
+        "IR total": float(ir_total),
+        "Détail par tranche": detail_tranches,
+        "Règle globale": "Traitements et salaires : abattement forfaitaire 10% (CGI art. 83) + barème progressif (CGI art. 197)",
+    }
+
+
+# ============================================================
+# Conseil automatique (pré-rempli, modifiable)
+# ============================================================
+def conseil_automatique(rem_pct: float, div_pct: float) -> str:
+    """
+    Commentaire de conseil (CGP / cabinet) : pré-rempli et éditable.
+    Logique volontairement simple, lisible, non prétentieuse.
+    """
+    rem_pct = float(rem_pct)
+    div_pct = float(div_pct)
+
+    if rem_pct >= 75.0:
+        return (
+            "Orientation rémunération : protection sociale renforcée (assiette SSI plus élevée) "
+            "mais coût global souvent supérieur via les cotisations. "
+            "Pertinent si l'objectif prioritaire est la couverture sociale et la régularité."
+        )
+    if div_pct >= 75.0:
+        return (
+            "Orientation dividendes : réduction des cotisations (hors SSI sur part > 10% si activée) "
+            "mais hausse de la fiscalité personnelle sur dividendes. "
+            "Intéressant en logique patrimoniale / trésorerie, sous réserve du seuil 10% SSI."
+        )
+    return (
+        "Mix équilibré : compromis entre charges sociales et fiscalité. "
+        "Souvent une option robuste pour lisser le coût global tout en conservant une protection sociale correcte."
+    )
 
 
 # ============================================================
@@ -115,7 +177,7 @@ def compute_dividendes_net_v2(
     ssi_on_above_rate: float,
     apply_ps_on_above: bool,      # PS sur > seuil (prudence)
     apply_ir_on_above: bool,      # IR sur part > seuil ? (option avancée)
-) -> Tuple[float, Dict[str, float]]:
+) -> Tuple[float, Dict[str, Any]]:
     """
     Découpage :
     - part <= seuil : pas SSI ; taxation selon mode (PFU OU IR abattement 40%) + PS 17,2%
@@ -133,12 +195,14 @@ def compute_dividendes_net_v2(
         ps_leq = leq * pfu_ps
         base_ir_leq = leq
         lib_ir = f"PFU IR {pfu_ir*100:.1f}%"
+        regle_leq = "PFU : 12,8% (IR) + 17,2% (PS)"
     else:
         # IR barème approximé par taux moyen sur base 60% (abattement 40%)
         base_ir_leq = leq * 0.60
         ir_leq = base_ir_leq * taux_ir_div
         ps_leq = leq * pfu_ps
         lib_ir = f"IR (base 60%) @ {taux_ir_div*100:.1f}%"
+        regle_leq = "Option IR : base = dividendes * 60% (abattement 40%) ; IR ≈ taux moyen paramétré ; PS 17,2%"
 
     # > seuil
     ssi_above = above * (ssi_on_above_rate if apply_ssi_on_above else 0.0)
@@ -148,12 +212,15 @@ def compute_dividendes_net_v2(
         if mode_div == "PFU":
             ir_above = above * pfu_ir
             base_ir_above = above
+            regle_ir_above = "Option : PFU IR appliqué aussi sur la part > seuil"
         else:
             base_ir_above = above * 0.60
             ir_above = base_ir_above * taux_ir_div
+            regle_ir_above = "Option : IR (base 60%) appliqué aussi sur la part > seuil"
     else:
         base_ir_above = 0.0
         ir_above = 0.0
+        regle_ir_above = "IR sur part > seuil non appliqué (option désactivée)"
 
     ir_total = ir_leq + ir_above
     ps_total = ps_leq + ps_above
@@ -161,26 +228,33 @@ def compute_dividendes_net_v2(
 
     net = div_brut - impots_total - ssi_above
 
-    detail = {
-        "Dividendes bruts": div_brut,
-        "Seuil 10% (par gérant)": seuil,
-        "Part <= seuil": leq,
-        "Part > seuil": above,
-        "Mode imposition": 1.0 if mode_div == "PFU" else 2.0,  # juste pour debug éventuel
-        "IR sur <= seuil": ir_leq,
-        "PS sur <= seuil": ps_leq,
-        "Base IR <= seuil": base_ir_leq,
-        "SSI sur > seuil": ssi_above,
-        "PS sur > seuil (prudence)": ps_above,
-        "IR sur > seuil (option)": ir_above,
-        "Base IR > seuil": base_ir_above,
-        "IR total": ir_total,
-        "PS total": ps_total,
-        "Impôts dividendes (IR/PFU+PS)": impots_total,
-        "Dividendes nets": max(0.0, net),
+    detail: Dict[str, Any] = {
+        "Dividendes bruts": float(div_brut),
+        "Seuil 10% (par gérant)": float(seuil),
+        "Part <= seuil": float(leq),
+        "Part > seuil": float(above),
+
+        "Règle part <= seuil": regle_leq,
+        "Libellé IR (part <= seuil)": lib_ir,
+
+        "IR sur <= seuil": float(ir_leq),
+        "PS sur <= seuil": float(ps_leq),
+        "Base IR <= seuil": float(base_ir_leq),
+
+        "SSI sur > seuil": float(ssi_above),
+        "Règle SSI > seuil": "Dividendes excédant 10% (capital+primes+CCA) / gérant — soumis SSI si option activée",
+        "PS sur > seuil (prudence)": float(ps_above),
+        "Règle PS > seuil": "Approche prudente : PS 17,2% conservés sur la part > seuil si option activée",
+
+        "IR sur > seuil (option)": float(ir_above),
+        "Base IR > seuil": float(base_ir_above),
+        "Règle IR > seuil": regle_ir_above,
+
+        "IR total": float(ir_total),
+        "PS total": float(ps_total),
+        "Impôts dividendes (IR/PFU+PS)": float(impots_total),
+        "Dividendes nets": float(max(0.0, net)),
     }
-    # libellé séparé pour affichage
-    detail["_Libellé IR dividendes"] = lib_ir
     return max(0.0, net), detail
 
 
@@ -309,7 +383,14 @@ def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: p
             ]
             taux_eff = piecewise_linear_rate(ratio, pts)
             montant = assiette * taux_eff
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"taux eff. ≈ {taux_eff*100:.2f}%", "Montant (€)": montant})
+            rows.append(
+                {
+                    "Cotisation": lib,
+                    "Base (€)": assiette,
+                    "Règle / taux": f"taux effectif ≈ {taux_eff*100:.2f}%",
+                    "Montant (€)": montant,
+                }
+            )
 
         elif typ == "alloc_fam":
             s0 = float(p["seuil0_mult"])
@@ -322,7 +403,14 @@ def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: p
             else:
                 taux = tmax * (ratio - s0) / (s1 - s0)
             montant = assiette * taux
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"taux ≈ {taux*100:.2f}%", "Montant (€)": montant})
+            rows.append(
+                {
+                    "Cotisation": lib,
+                    "Base (€)": assiette,
+                    "Règle / taux": f"taux ≈ {taux*100:.2f}%",
+                    "Montant (€)": montant,
+                }
+            )
 
         elif typ == "plafonne":
             taux = float(p["taux"])
@@ -330,7 +418,14 @@ def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: p
             plafond = pass_annuel * plaf_mult
             base_plaf = min(assiette, plafond)
             montant = base_plaf * taux
-            rows.append({"Cotisation": lib, "Base (€)": base_plaf, "Règle / taux": f"{taux*100:.2f}% sur min(assiette ; {plaf_mult:.2f} PASS)", "Montant (€)": montant})
+            rows.append(
+                {
+                    "Cotisation": lib,
+                    "Base (€)": base_plaf,
+                    "Règle / taux": f"{taux*100:.2f}% sur min(assiette ; {plaf_mult:.2f} PASS)",
+                    "Montant (€)": montant,
+                }
+            )
 
         elif typ == "retraite_base":
             taux_plaf = float(p["taux_plafond"])
@@ -340,7 +435,14 @@ def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: p
             base1 = min(assiette, plafond)
             base2 = max(0.0, assiette - plafond)
             montant = base1 * taux_plaf + base2 * taux_depl
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"{taux_plaf*100:.2f}% <= {plaf_mult:.2f} PASS + {taux_depl*100:.2f}% au-delà", "Montant (€)": montant})
+            rows.append(
+                {
+                    "Cotisation": lib,
+                    "Base (€)": assiette,
+                    "Règle / taux": f"{taux_plaf*100:.2f}% <= {plaf_mult:.2f} PASS + {taux_depl*100:.2f}% au-delà",
+                    "Montant (€)": montant,
+                }
+            )
 
         elif typ == "retraite_complementaire":
             t1 = float(p["taux_t1"])
@@ -352,7 +454,14 @@ def compute_cotisations_detail(assiette: float, pass_annuel: float, df_params: p
             base_t1 = min(assiette, lim1)
             base_t2 = min(max(0.0, assiette - lim1), max(0.0, lim2 - lim1))
             montant = base_t1 * t1 + base_t2 * t2
-            rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": f"{t1*100:.2f}% <= {t1_mult:.2f} PASS ; {t2*100:.2f}% de {t1_mult:.2f} à {t2_mult:.2f} PASS", "Montant (€)": montant})
+            rows.append(
+                {
+                    "Cotisation": lib,
+                    "Base (€)": assiette,
+                    "Règle / taux": f"{t1*100:.2f}% <= {t1_mult:.2f} PASS ; {t2*100:.2f}% de {t1_mult:.2f} à {t2_mult:.2f} PASS",
+                    "Montant (€)": montant,
+                }
+            )
 
         else:
             rows.append({"Cotisation": lib, "Base (€)": assiette, "Règle / taux": "Type non géré", "Montant (€)": 0.0})
@@ -397,7 +506,7 @@ def init_state() -> None:
         "taux_csg_pct": 9.7,
         "fp_montant": 0.0,
 
-        # IR sur rémunération (barème)
+        # IR barème rémunération
         "revalo_tranche1": False,
 
         # SSI paramètres (table modifiable)
@@ -414,8 +523,11 @@ def init_state() -> None:
             ]
         ),
 
-        # Commentaires (par scénario / gérant)
-        "commentaires": {},  # key = f"{code}::G{i}"
+        # Commentaires (pré-remplis mais modifiables)
+        # clé = f"{code}::G{idx}" (ex : "C::G1")
+        "commentaires": {},
+
+        # UI
         "show_details": False,
     }
 
@@ -501,7 +613,6 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
     revalo_tr1 = bool(st.session_state["revalo_tranche1"])
 
     scenarios_df: pd.DataFrame = st.session_state["scenarios_df"].copy()
-    # sécurise types
     for col in ["Rem_%", "Div_%"]:
         scenarios_df[col] = pd.to_numeric(scenarios_df[col], errors="coerce").fillna(0.0)
 
@@ -514,7 +625,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
         rem_pct = float(srow["Rem_%"])
         div_pct = float(srow["Div_%"])
 
-        # Normalisation souple : si somme != 100, on normalise (évite incohérences)
+        # Normalisation souple : si somme != 100, on normalise
         tot = rem_pct + div_pct
         if tot <= 0:
             rem_share = 0.0
@@ -535,11 +646,11 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
         for i in range(nb):
             target_cash = float(objectifs_annuels[i])
 
-            # Répartition : on vise des nets (proxy comme V2 initial)
+            # Répartition : on vise des nets (proxy)
             rem_net_target = target_cash * rem_share
             div_net_target = target_cash * div_share
 
-            # Dividendes bruts nécessaires pour atteindre div_net_target
+            # Dividendes bruts nécessaires
             div_brut_needed = solve_dividendes_bruts_for_net_v2(
                 div_net_target,
                 mode_div=mode_div,
@@ -552,6 +663,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
                 apply_ps_on_above=apply_ps_on_above,
                 apply_ir_on_above=apply_ir_on_above,
             )
+
             div_net_calc, div_detail = compute_dividendes_net_v2(
                 div_brut_needed,
                 mode_div=mode_div,
@@ -567,16 +679,16 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
 
             impots_div_i = float(div_detail["Impôts dividendes (IR/PFU+PS)"])
 
-            # Part dividendes susceptible SSI (part > seuil)
+            # Part dividendes SSI (part > seuil)
             div_part_ssi = max(0.0, float(div_detail["Part > seuil"])) if apply_ssi_on_above else 0.0
 
-            # Assiette SSI proxy (comme code initial)
+            # Assiette SSI proxy
             if mode_assiette.startswith("Assiette = rémunération +"):
                 assiette_ssi = rem_net_target + div_part_ssi
             else:
                 assiette_ssi = rem_net_target
 
-            # Cotisations SSI hors CSG/FP (détail)
+            # Cotisations SSI hors CSG/FP
             df_ssi_detail = compute_cotisations_detail(
                 assiette=assiette_ssi,
                 pass_annuel=pass_annuel,
@@ -593,8 +705,9 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
 
             cotisations_total_i = cot_hors_csg_fp + csg_crds + fp
 
-            # IR rémunération (barème progressif sur rémunération nette)
-            ir_rem_i = calcul_ir_progressif(rem_net_target, tranche1_revalo=revalo_tr1)
+            # ✅ IR rémunération (barème + abattement 10% + détail)
+            ir_detail = calcul_ir_remuneration_detail(rem_net_target, tranche1_revalo=revalo_tr1)
+            ir_rem_i = float(ir_detail["IR total"])
 
             # Totaux
             total_rem_net += rem_net_target
@@ -604,7 +717,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
             total_cot += cotisations_total_i
             total_impots_div += impots_div_i
 
-            # Poids pour ventilation IS (comme V2 initial : prorata net cash perçu)
+            # Poids pour ventilation IS (prorata net cash perçu)
             poids_i = rem_net_target + div_net_calc
             poids_eco.append(poids_i)
 
@@ -614,6 +727,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
                     "target_cash": target_cash,
                     "rem_net": rem_net_target,
                     "ir_rem": ir_rem_i,
+                    "ir_detail": ir_detail,
                     "div_net": div_net_calc,
                     "div_brut": div_brut_needed,
                     "div_detail": div_detail,
@@ -627,14 +741,17 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
                 }
             )
 
-        # IS fiscal (ex IS juridique) : base = résultat - rémunérations - (cotisations si déductibles)
+        # IS fiscal : base = résultat - rémunérations - (cotisations si déductibles)
         base_is = resultat_avant_rem - total_rem_net - (total_cot if cotisations_deductibles_is else 0.0)
         base_is = max(0.0, base_is)
         is_societe = calcul_is(base_is, is_taux_reduit)
 
-        # Ventilation IS par gérant (E1) au prorata du net cash perçu
+        # Ventilation IS par gérant au prorata du net cash perçu
         total_poids = sum(poids_eco) or 1.0
         is_par_gerant = [is_societe * safe_div(p, total_poids) for p in poids_eco]
+
+        # Conseil auto (par scénario, utilisé pour pré-remplir les commentaires gérants)
+        conseil_auto = conseil_automatique(rem_pct=rem_pct, div_pct=div_pct)
 
         details_by_code[code] = {
             "code": code,
@@ -643,6 +760,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
             "div_pct": div_pct,
             "rem_share": rem_share,
             "div_share": div_share,
+            "conseil_auto": conseil_auto,
             "gerants": gerants,
             "total_rem_net": total_rem_net,
             "total_div_brut": total_div_brut,
@@ -656,7 +774,6 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
         }
 
         # Synthèse (moyenne par gérant) — utile en “Tous”
-        # IMPORTANT : TOTAL = cotisations + IR remu + impôts dividendes + IS ventilé
         avg = lambda x: x / max(1, nb)
         synth_rows.append(
             {
@@ -670,6 +787,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
                 "Cotisations sociales": avg(total_cot),
                 "IS": avg(is_societe),
                 "TOTAL": avg(total_cot + total_ir_rem + total_impots_div + is_societe),
+                "Commentaire": conseil_auto,
             }
         )
 
@@ -682,7 +800,7 @@ def compute_all_scenarios(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, 
 # ============================================================
 def ui() -> None:
     st.set_page_config(page_title="Opti-Remu V2", layout="wide")
-    st.title("Opti-Remu — V2 (IS, PFU/IR, seuil 10% SSI, IR barème)")
+    st.title("Opti-Remu — V2 (IS, PFU/IR, seuil 10% SSI, IR barème + abattement 10%)")
     st.caption("Outil cabinet : comparaison multi-scénarios + fiches détaillées (audit-proof).")
 
     tab_gerants, tab_societe, tab_dividendes, tab_ssi, tab_ir, tab_scenarios, tab_resultats = st.tabs(
@@ -704,7 +822,7 @@ def ui() -> None:
             st.session_state["gerant_filtre"] = st.selectbox(
                 "Filtre restitution",
                 options=["Tous"] + [f"Gérant {i}" for i in range(1, int(st.session_state["nb_gerants"]) + 1)],
-                index=0 if st.session_state["gerant_filtre"] == "Tous" else 0,
+                index=0,
                 help="Affiche la moyenne (Tous) ou un gérant en particulier.",
             )
 
@@ -781,7 +899,7 @@ def ui() -> None:
                 "Assiette = rémunération uniquement (dividendes hors SSI)",
             ],
             index=0 if st.session_state["mode_assiette"].startswith("Assiette = rémunération +") else 1,
-            help="Mode proxy (comme V2 initial) : inclure ou non la part de dividendes > 10% dans l’assiette SSI.",
+            help="Mode proxy : inclure ou non la part de dividendes > 10% dans l’assiette SSI.",
         )
 
     with tab_dividendes:
@@ -845,7 +963,7 @@ def ui() -> None:
         st.session_state["apply_ir_on_above"] = st.checkbox(
             "IR sur part > 10% (option avancée)",
             value=bool(st.session_state["apply_ir_on_above"]),
-            help="Option avancée : applique aussi IR/PFU IR sur la part > seuil (sinon uniquement sur <= seuil).",
+            help="Option avancée : applique aussi IR/PFU IR sur la part > seuil.",
         )
 
     with tab_ssi:
@@ -896,8 +1014,8 @@ def ui() -> None:
             help="Permet de basculer la borne de la 1ère tranche (0%) de 11 497 € à 11 612 €.",
         )
         st.info(
-            "IR rémunération = barème progressif (1 part) appliqué sur la rémunération nette annuelle (proxy). "
-            "Sans quotient familial, sans décote, sans réductions/crédits."
+            "IR rémunération : abattement 10% (CGI art. 83) puis barème progressif (CGI art. 197). "
+            "Hypothèses : 1 part, sans quotient familial, sans décote, sans réductions/crédits."
         )
 
     with tab_scenarios:
@@ -935,7 +1053,6 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
         f"(capital={fmt_eur(float(st.session_state['capital']))}, primes={fmt_eur(float(st.session_state['primes_emission']))}, CCA={fmt_eur(float(st.session_state['cca_total']))})"
     )
 
-    # Filtre : Tous (moyenne) ou gérant précis
     gi = cfg["gerant_index"]
     nb = cfg["nb_gerants"]
 
@@ -948,38 +1065,43 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
             continue
 
         if gi is None:
-            # moyenne déjà dans df_synth
-            rows.append({
-                "Scénario": r["Scénario"],
-                "Rémunération nette": r["Rémunération nette"],
-                "IR rémunération": r["IR rémunération"],
-                "Dividendes bruts": r["Dividendes bruts"],
-                "Dividendes nets": r["Dividendes nets"],
-                "Impôts dividendes": r["Impôts dividendes"],
-                "Cotisations sociales": r["Cotisations sociales"],
-                "IS": r["IS"],
-                "TOTAL": r["TOTAL"],
-            })
+            rows.append(
+                {
+                    "Scénario": r["Scénario"],
+                    "Rémunération nette": r["Rémunération nette"],
+                    "IR rémunération": r["IR rémunération"],
+                    "Dividendes bruts": r["Dividendes bruts"],
+                    "Dividendes nets": r["Dividendes nets"],
+                    "Impôts dividendes": r["Impôts dividendes"],
+                    "Cotisations sociales": r["Cotisations sociales"],
+                    "IS": r["IS"],
+                    "TOTAL": r["TOTAL"],
+                    "Commentaire": r.get("Commentaire", det.get("conseil_auto", "")),
+                }
+            )
         else:
             g = det["gerants"][gi]
             is_i = det["is_par_gerant"][gi]
             total_i = g["cotisations_total"] + g["ir_rem"] + g["impots_div"] + is_i
-            rows.append({
-                "Scénario": f"{det['code']} – {det['label']}",
-                "Rémunération nette": g["rem_net"],
-                "IR rémunération": g["ir_rem"],
-                "Dividendes bruts": g["div_brut"],
-                "Dividendes nets": g["div_net"],
-                "Impôts dividendes": g["impots_div"],
-                "Cotisations sociales": g["cotisations_total"],
-                "IS": is_i,
-                "TOTAL": total_i,
-            })
+            rows.append(
+                {
+                    "Scénario": f"{det['code']} – {det['label']}",
+                    "Rémunération nette": g["rem_net"],
+                    "IR rémunération": g["ir_rem"],
+                    "Dividendes bruts": g["div_brut"],
+                    "Dividendes nets": g["div_net"],
+                    "Impôts dividendes": g["impots_div"],
+                    "Cotisations sociales": g["cotisations_total"],
+                    "IS": is_i,
+                    "TOTAL": total_i,
+                    "Commentaire": det.get("conseil_auto", ""),
+                }
+            )
 
     df = pd.DataFrame(rows)
 
-    # Mise en forme : "TOTAL" grisé
-    money_cols = [c for c in df.columns if c != "Scénario"]
+    # Mise en forme : TOTAL grisé (sans toucher à Commentaire)
+    money_cols = [c for c in df.columns if c not in ("Scénario", "Commentaire")]
     styler = (
         df.style
         .format({c: (lambda x: fmt_eur(x)) for c in money_cols})
@@ -997,9 +1119,17 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
         with st.expander(title, expanded=default_open):
             st.write("**Base IS (fiscale)** :", fmt_eur(det["base_is"]))
             st.write("**IS (société)** :", fmt_eur(det["is_societe"]))
+            st.caption(
+                "Règle IS : base = résultat – rémunérations – (cotisations si déductibles) ; taux 15% jusqu’à 42 500€ (option) puis 25%."
+            )
 
-            st.caption("Ventilation IS (E1) au prorata du net cash perçu (rémunération nette + dividendes nets).")
             st.divider()
+            st.subheader("💡 Conseil (pré-rempli, modifiable)")
+            st.caption("Commentaire cabinet / CGP : pré-rempli automatiquement et modifiable pour le dossier.")
+            st.write(det.get("conseil_auto", ""))
+
+            st.divider()
+            st.caption("Ventilation IS (E1) : prorata du net cash perçu (rémunération nette + dividendes nets).")
 
             if cfg["gerant_index"] is None:
                 # Tous les gérants
@@ -1008,14 +1138,17 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                     st.subheader(f"Gérant {g['idx']}")
 
                     st.write("Objectif net annuel :", fmt_eur(g["target_cash"]))
+
                     st.write("Rémunération nette :", fmt_eur(g["rem_net"]))
-                    st.write("IR rémunération (barème) :", fmt_eur(g["ir_rem"]))
+                    st.caption("Règle : base IR = rémunération nette – abattement 10% (CGI art. 83), puis barème (CGI art. 197).")
+                    st.write("IR rémunération :", fmt_eur(g["ir_rem"]))
 
                     st.write("Dividendes bruts :", fmt_eur(g["div_brut"]))
                     st.write("Dividendes nets :", fmt_eur(g["div_net"]))
                     st.write("Impôts dividendes (IR/PFU+PS) :", fmt_eur(g["impots_div"]))
 
                     st.write("Assiette SSI (proxy) :", fmt_eur(g["assiette_ssi"]))
+                    st.caption("Règle : assiette SSI = rémunération + (dividendes > seuil si option activée) selon le mode retenu.")
                     st.write("Cotisations sociales (total) :", fmt_eur(g["cotisations_total"]))
 
                     st.write("IS ventilé (E1) :", fmt_eur(det["is_par_gerant"][idx0]))
@@ -1023,15 +1156,32 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                     total_i = g["cotisations_total"] + g["ir_rem"] + g["impots_div"] + det["is_par_gerant"][idx0]
                     st.write("✅ **TOTAL** :", fmt_eur(total_i))
 
+                    with st.expander("🧾 Détail IR rémunération (abattement 10% + tranches)", expanded=False):
+                        ir_det = g["ir_detail"]
+                        st.write("Rémunération nette annuelle :", fmt_eur(ir_det["Rémunération nette annuelle"]))
+                        st.write("Abattement 10% (CGI art. 83) :", fmt_eur(ir_det["Abattement 10% (CGI art. 83)"]))
+                        st.write("Revenu net imposable IR :", fmt_eur(ir_det["Revenu net imposable IR"]))
+                        st.write("IR total :", fmt_eur(ir_det["IR total"]))
+                        st.caption(ir_det["Règle globale"])
+
+                        df_ir = pd.DataFrame(ir_det["Détail par tranche"])
+                        if df_ir.empty:
+                            st.write("Aucun détail disponible.")
+                        else:
+                            st.dataframe(
+                                df_ir.style.format(
+                                    {
+                                        "Base taxable": lambda x: fmt_eur(x),
+                                        "Impôt tranche": lambda x: fmt_eur(x),
+                                        "Taux": "{:.0%}".format,
+                                    }
+                                ),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
                     with st.expander("🔍 Détail dividendes (<=10% / >10%)", expanded=False):
-                        # affichage contrôlé
-                        d = dict(g["div_detail"])
-                        # enlève l'indicateur numérique "Mode imposition"
-                        d.pop("Mode imposition", None)
-                        # libellé
-                        lib = d.pop("_Libellé IR dividendes", "")
-                        st.write("Libellé IR dividendes :", lib)
-                        st.json(d)
+                        st.json(g["div_detail"])
 
                     with st.expander("🔍 Détail SSI (hors CSG/CRDS & FP)", expanded=False):
                         df_det = g["df_ssi_detail"]
@@ -1049,14 +1199,16 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                             st.write("CSG/CRDS :", fmt_eur(g["csg_crds"]))
                             st.write("FP/CFP :", fmt_eur(g["fp"]))
 
-                    # Commentaire
+                    # Commentaire par gérant (pré-rempli, modifiable)
                     key = f"{code}::G{g['idx']}"
-                    if key not in st.session_state["commentaires"]:
-                        st.session_state["commentaires"][key] = ""
+                    if key not in st.session_state["commentaires"] or not st.session_state["commentaires"][key]:
+                        st.session_state["commentaires"][key] = det.get("conseil_auto", "")
+
                     st.session_state["commentaires"][key] = st.text_area(
                         f"Commentaire – scénario {code} – gérant {g['idx']}",
                         value=st.session_state["commentaires"][key],
                         height=90,
+                        help="Commentaire de conseil : pré-rempli automatiquement, modifiable pour adaptation au dossier client.",
                     )
 
                     st.divider()
@@ -1067,8 +1219,10 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                 st.subheader(f"👤 {st.session_state['gerant_filtre']}")
 
                 st.write("Objectif net annuel :", fmt_eur(g["target_cash"]))
+
                 st.write("Rémunération nette :", fmt_eur(g["rem_net"]))
-                st.write("IR rémunération (barème) :", fmt_eur(g["ir_rem"]))
+                st.caption("Règle : base IR = rémunération nette – abattement 10% (CGI art. 83), puis barème (CGI art. 197).")
+                st.write("IR rémunération :", fmt_eur(g["ir_rem"]))
 
                 st.write("Dividendes bruts :", fmt_eur(g["div_brut"]))
                 st.write("Dividendes nets :", fmt_eur(g["div_net"]))
@@ -1081,12 +1235,32 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                 total_i = g["cotisations_total"] + g["ir_rem"] + g["impots_div"] + det["is_par_gerant"][gi]
                 st.write("✅ **TOTAL** :", fmt_eur(total_i))
 
+                with st.expander("🧾 Détail IR rémunération (abattement 10% + tranches)", expanded=False):
+                    ir_det = g["ir_detail"]
+                    st.write("Rémunération nette annuelle :", fmt_eur(ir_det["Rémunération nette annuelle"]))
+                    st.write("Abattement 10% (CGI art. 83) :", fmt_eur(ir_det["Abattement 10% (CGI art. 83)"]))
+                    st.write("Revenu net imposable IR :", fmt_eur(ir_det["Revenu net imposable IR"]))
+                    st.write("IR total :", fmt_eur(ir_det["IR total"]))
+                    st.caption(ir_det["Règle globale"])
+
+                    df_ir = pd.DataFrame(ir_det["Détail par tranche"])
+                    if df_ir.empty:
+                        st.write("Aucun détail disponible.")
+                    else:
+                        st.dataframe(
+                            df_ir.style.format(
+                                {
+                                    "Base taxable": lambda x: fmt_eur(x),
+                                    "Impôt tranche": lambda x: fmt_eur(x),
+                                    "Taux": "{:.0%}".format,
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
                 with st.expander("🔍 Détail dividendes (<=10% / >10%)", expanded=False):
-                    d = dict(g["div_detail"])
-                    d.pop("Mode imposition", None)
-                    lib = d.pop("_Libellé IR dividendes", "")
-                    st.write("Libellé IR dividendes :", lib)
-                    st.json(d)
+                    st.json(g["div_detail"])
 
                 with st.expander("🔍 Détail SSI (hors CSG/CRDS & FP)", expanded=False):
                     df_det = g["df_ssi_detail"]
@@ -1104,17 +1278,23 @@ def render_results(cfg: Dict[str, Any], df_synth: pd.DataFrame, details_by_code:
                         st.write("CSG/CRDS :", fmt_eur(g["csg_crds"]))
                         st.write("FP/CFP :", fmt_eur(g["fp"]))
 
+                # Commentaire par gérant (pré-rempli, modifiable)
                 key = f"{code}::G{g['idx']}"
-                if key not in st.session_state["commentaires"]:
-                    st.session_state["commentaires"][key] = ""
+                if key not in st.session_state["commentaires"] or not st.session_state["commentaires"][key]:
+                    st.session_state["commentaires"][key] = det.get("conseil_auto", "")
+
                 st.session_state["commentaires"][key] = st.text_area(
                     f"Commentaire – scénario {code} – {st.session_state['gerant_filtre']}",
                     value=st.session_state["commentaires"][key],
                     height=110,
+                    help="Commentaire de conseil : pré-rempli automatiquement, modifiable pour adaptation au dossier client.",
                 )
 
     st.divider()
-    st.caption("IS = IS fiscal (ex 'IS juridique'). TOTAL = cotisations + IR rémunération + impôts dividendes + IS (ventilé).")
+    st.caption(
+        "IS = IS fiscal. TOTAL = cotisations + IR rémunération + impôts dividendes + IS (ventilé). "
+        "IR rémunération : abattement 10% (CGI art. 83) + barème (CGI art. 197)."
+    )
 
 
 # ============================================================
